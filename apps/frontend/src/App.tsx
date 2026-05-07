@@ -606,6 +606,11 @@ export default function App() {
     return defaultProfile;
   }
 
+  const selectedSavedChannel = useMemo(
+    () => (selectedSavedChannelId ? savedChannels.find((x) => x.channel_id === selectedSavedChannelId) ?? null : null),
+    [savedChannels, selectedSavedChannelId]
+  );
+
   const activeThresholdProfile = useMemo(() => profileForCategory(selectedSavedChannel?.internal_category), [selectedSavedChannel?.internal_category]);
 
   // Discovery thresholds.
@@ -646,7 +651,6 @@ export default function App() {
     if (x >= activeThresholdProfile.engsub_mid) return "mid";
     return "bad";
   }
-
   const savedById = useMemo(() => {
     const m = new Map<string, SavedChannelItem>();
     for (const c of savedChannels) m.set(c.channel_id, c);
@@ -678,11 +682,6 @@ export default function App() {
       window.scrollTo(0, 0);
     }
   }, [selectedSavedChannelId]);
-
-  const selectedSavedChannel = useMemo(
-    () => (selectedSavedChannelId ? savedChannels.find((x) => x.channel_id === selectedSavedChannelId) ?? null : null),
-    [savedChannels, selectedSavedChannelId]
-  );
 
   useEffect(() => {
     if (!selectedSavedChannel) return;
