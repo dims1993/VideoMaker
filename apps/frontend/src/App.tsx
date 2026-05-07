@@ -201,6 +201,57 @@ type ChannelSearchItem = {
   description?: string;
 };
 
+type SavedChannelItem = {
+  channel_id: string;
+  handle?: string | null;
+  title?: string;
+  avatar_url?: string | null;
+  internal_category?: string | null;
+  is_pearl?: boolean | null;
+  subscribers?: number | null;
+  total_views?: number | null;
+  video_count?: number | null;
+  updated_at?: string | null;
+  last_synced_at?: string | null;
+
+  // Derived opportunity metrics (computed in backend)
+  opportunity_score?: number | null;
+  subs_delta_30d?: number | null;
+  views_delta_30d?: number | null;
+  views_per_sub?: number | null;
+  median_views?: number | null;
+  hit_rate?: number | null;
+  uploads_per_month_90d?: number | null;
+  days_since_last_upload?: number | null;
+  median_duration_min?: number | null;
+  pct_over_8min?: number | null;
+  pct_over_10min?: number | null;
+  likes_per_1k_views?: number | null;
+  comments_per_1k_views?: number | null;
+};
+
+type ChannelVideoItem = {
+  video_id: string;
+  title: string;
+  thumbnail_url?: string | null;
+  description?: string | null;
+  tags_json?: unknown;
+  category_id?: string | null;
+  default_language?: string | null;
+  default_audio_language?: string | null;
+  published_at?: string | null;
+  duration_s?: number | null;
+  views?: number | null;
+  likes?: number | null;
+  comments?: number | null;
+  views_per_day?: number | null;
+  vph?: number | null;
+  engagement?: number | null;
+  like_rate?: number | null;
+  comment_rate?: number | null;
+  engagement_per_sub?: number | null;
+};
+
 function parseLogTail(text: string): ParsedLogEntry[] {
   const out: ParsedLogEntry[] = [];
   for (const raw of text.split("\n")) {
@@ -302,9 +353,38 @@ export default function App() {
   const [channelSearchQ, setChannelSearchQ] = useState("");
   const [channelMinSubs, setChannelMinSubs] = useState(0);
   const [channelMinViews, setChannelMinViews] = useState(0);
-  const [channelSort, setChannelSort] = useState<"subs" | "views">("subs");
+  const [channelSort, setChannelSort] = useState<"subs" | "views" | "videos" | "views_per_video" | "views_per_sub">("subs");
+  const [channelLang, setChannelLang] = useState<"" | "es" | "en">("");
+  const [channelCategory, setChannelCategory] = useState("");
   const [channelSearchResults, setChannelSearchResults] = useState<ChannelSearchItem[]>([]);
   const [selectedChannel, setSelectedChannel] = useState<ChannelSearchItem | null>(null);
+  // Holds all channels we know in DB (pearls + scans),
+  // so search results can display metrics after a quick scan.
+  const [savedChannels, setSavedChannels] = useState<SavedChannelItem[]>([]);
+  const [selectedSavedChannelId, setSelectedSavedChannelId] = useState<string | null>(null);
+  const [analyzePanel, setAnalyzePanel] = useState<"search" | "saved">("search");
+  const [savedChannelVideos, setSavedChannelVideos] = useState<ChannelVideoItem[]>([]);
+
+  // Saved channels filters/sort (opportunity discovery)
+  const [savedQ, setSavedQ] = useState("");
+  const [savedCategory, setSavedCategory] = useState("");
+  const [savedSort, setSavedSort] = useState<
+    | "opportunity"
+    | "subs_delta_30d"
+    | "views_delta_30d"
+    | "median_views"
+    | "hit_rate"
+    | "engagement"
+    | "uploads_per_month"
+    | "days_since_upload"
+    | "views_per_sub"
+  >("opportunity");
+  const [savedMinSubs, setSavedMinSubs] = useState(0);
+  const [savedMinViews, setSavedMinViews] = useState(0);
+  const [savedMinUploadsMonth, setSavedMinUploadsMonth] = useState(0);
+  const [savedMinViewsPerSub, setSavedMinViewsPerSub] = useState(0);
+  const [savedMinHitRate, setSavedMinHitRate] = useState(0);
+  const [savedHitViewsThreshold, setSavedHitViewsThreshold] = useState(50000);
 
   const [kw, setKw] = useState("motivación, hábitos, enfoque");
   const [ctx, setCtx] = useState("");
@@ -394,6 +474,149 @@ export default function App() {
     setChannelLog(j.log || "");
     if (j.report?.videos?.length) setChannelAutoPoll(false);
   }, [workApplied]);
+
+  const refreshSavedChannels = useCallback(async () => {
+    try {
+      const qs = new URLSearchParams({
+        limit: "100",
+        sort: savedSort,
+        q: savedQ.trim(),
+        category: savedCategory.trim(),
+        // Only pearls (curated) to avoid extra quota-driven scans.
+        pearls_only: "true",
+        min_subs: String(savedMinSubs || 0),
+        min_views: String(savedMinViews || 0),
+        min_uploads_month: String(savedMinUploadsMonth || 0),
+        min_views_per_sub: String(savedMinViewsPerSub || 0),
+        min_hit_rate: String(savedMinHitRate ? savedMinHitRate / 100 : 0),
+        hit_views_threshold: String(savedHitViewsThreshold || 50000),
+        window_videos: "50",
+      });
+      const r = await fetch(`/api/channels?${qs.toString()}`);
+      if (!r.ok) return;
+      const j = (await r.json()) as { channels: SavedChannelItem[] };
+      setSavedChannels(j.channels || []);
+    } catch {
+      /* ignore */
+    }
+  }, [
+    savedCategory,
+    savedHitViewsThreshold,
+    savedMinHitRate,
+    savedMinSubs,
+    savedMinUploadsMonth,
+    savedMinViews,
+    savedMinViewsPerSub,
+    savedQ,
+    savedSort,
+  ]);
+
+  const fmtK = useCallback((n: number | null | undefined) => {
+    if (typeof n !== "number" || !Number.isFinite(n)) return "—";
+    if (Math.abs(n) >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+    if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+    return String(Math.round(n));
+  }, []);
+
+  const fmtPct = useCallback((x: number | null | undefined) => {
+    if (typeof x !== "number" || !Number.isFinite(x)) return "—";
+    return `${Math.round(x * 100)}%`;
+  }, []);
+
+  const savedById = useMemo(() => {
+    const m = new Map<string, SavedChannelItem>();
+    for (const c of savedChannels) m.set(c.channel_id, c);
+    return m;
+  }, [savedChannels]);
+
+  const pearls = useMemo(() => savedChannels.filter((c) => !!c.is_pearl), [savedChannels]);
+
+  const refreshSavedChannelVideos = useCallback(
+    async (channelId: string) => {
+      try {
+        const r = await fetch(`/api/channels/${encodeURIComponent(channelId)}?videos_limit=100`);
+        if (!r.ok) return;
+        const j = (await r.json()) as { videos?: ChannelVideoItem[] };
+        setSavedChannelVideos(j.videos || []);
+      } catch {
+        /* ignore */
+      }
+    },
+    []
+  );
+
+  // UX: when entering channel detail, scroll to top.
+  useEffect(() => {
+    if (!selectedSavedChannelId) return;
+    try {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch {
+      window.scrollTo(0, 0);
+    }
+  }, [selectedSavedChannelId]);
+
+  const selectedSavedChannel = useMemo(
+    () => (selectedSavedChannelId ? savedChannels.find((x) => x.channel_id === selectedSavedChannelId) ?? null : null),
+    [savedChannels, selectedSavedChannelId]
+  );
+
+  const selectedChannelSyncState = useMemo(() => {
+    const st = session?.status;
+    if (!st || !selectedSavedChannelId) return null;
+    const mentionsChannel = (st.detail || "").includes(selectedSavedChannelId);
+    if (!mentionsChannel) return null;
+    if (st.step === "channel_sync" || st.step === "channel_scan") return st;
+    return null;
+  }, [session?.status, selectedSavedChannelId]);
+
+  type PerlaGrade = "excelente" | "bueno" | "regular" | "malo" | "sin_datos";
+  function gradeLabel(g: PerlaGrade): string {
+    if (g === "excelente") return "Excelente";
+    if (g === "bueno") return "Bueno";
+    if (g === "regular") return "Regular";
+    if (g === "malo") return "Malo";
+    return "Sin datos";
+  }
+
+  function gradeClass(g: PerlaGrade): string {
+    if (g === "excelente") return "border-emerald-200 bg-emerald-50 text-emerald-900";
+    if (g === "bueno") return "border-emerald-100 bg-emerald-50/60 text-emerald-900";
+    if (g === "regular") return "border-amber-200 bg-amber-50 text-amber-950";
+    if (g === "malo") return "border-rose-200 bg-rose-50 text-rose-900";
+    return "border-slate-200 bg-slate-50 text-slate-700";
+  }
+
+  function scorecard(saved: SavedChannelItem | undefined | null) {
+    const med = typeof saved?.median_views === "number" ? saved.median_views : null;
+    const hit = typeof saved?.hit_rate === "number" ? saved.hit_rate : null;
+    const com1k = typeof saved?.comments_per_1k_views === "number" ? saved.comments_per_1k_views : null;
+    const upmo = typeof saved?.uploads_per_month_90d === "number" ? saved.uploads_per_month_90d : null;
+    const long8 = typeof saved?.pct_over_8min === "number" ? saved.pct_over_8min : null;
+
+    const gMedian: PerlaGrade =
+      med == null ? "sin_datos" : med > 200_000 ? "excelente" : med >= 80_000 ? "bueno" : med >= 20_000 ? "regular" : "malo";
+    const gHit: PerlaGrade = hit == null ? "sin_datos" : hit > 0.6 ? "excelente" : hit >= 0.35 ? "bueno" : hit >= 0.15 ? "regular" : "malo";
+    const gCom: PerlaGrade =
+      com1k == null ? "sin_datos" : com1k > 4 ? "excelente" : com1k >= 2 ? "bueno" : com1k >= 1 ? "regular" : "malo";
+    const gUp: PerlaGrade = upmo == null ? "sin_datos" : upmo > 12 ? "excelente" : upmo >= 6 ? "bueno" : upmo >= 2 ? "regular" : "malo";
+    const gLong: PerlaGrade = long8 == null ? "sin_datos" : long8 > 0.7 ? "excelente" : long8 >= 0.4 ? "bueno" : long8 >= 0.15 ? "regular" : "malo";
+
+    const approvals = [gMedian, gHit, gCom, gUp].filter((g) => g === "excelente" || g === "bueno").length;
+    const hasAny = [med, hit, com1k, upmo, long8].some((x) => typeof x === "number");
+    const decision = !hasAny ? "Sin métricas (haz Guardar+Sync)" : approvals >= 3 ? "PERLA (Aprobado)" : approvals === 2 ? "Dudoso" : "Rechazar";
+
+    return {
+      decision,
+      rows: [
+        { k: "Mediana views (N=50)", v: med == null ? "—" : fmtK(med), rule: ">200k / 80–200k / 20–80k / <20k", g: gMedian },
+        { k: "Hit-rate (>=X)", v: hit == null ? "—" : fmtPct(hit), rule: ">60% / 35–60% / 15–35% / <15%", g: gHit },
+        { k: "Comentarios / 1k", v: com1k == null ? "—" : com1k.toFixed(1), rule: ">4 / 2–4 / 1–2 / <1", g: gCom },
+        { k: "Uploads / mes", v: upmo == null ? "—" : upmo.toFixed(1), rule: ">12 / 6–12 / 2–6 / <2", g: gUp },
+        { k: "% vídeos > 8min", v: long8 == null ? "—" : fmtPct(long8), rule: ">70% / 40–70% / 15–40% / <15%", g: gLong },
+      ],
+    };
+  }
 
   useEffect(() => {
     void refresh();
@@ -522,7 +745,38 @@ export default function App() {
           ) : null}
 
           {activeTab === "analyze" ? (
-            <Card title="Analyse · YouTube" subtitle="Pega una URL de YouTube y genera insights para alimentar Create.">
+            <Card title="Analyse" subtitle="Dashboard minimalista para buscar y sincronizar información de YouTube.">
+              <div className="rounded-2xl border border-slate-200 bg-white p-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <Btn
+                    className={`${
+                      analyzePanel === "search"
+                        ? "bg-slate-900 text-white hover:bg-slate-800"
+                        : "bg-white text-slate-900 ring-1 ring-slate-200 hover:bg-slate-50"
+                    }`}
+                    onClick={() => setAnalyzePanel("search")}
+                  >
+                    Buscar canal
+                  </Btn>
+                  <Btn
+                    className={`${
+                      analyzePanel === "saved"
+                        ? "bg-slate-900 text-white hover:bg-slate-800"
+                        : "bg-white text-slate-900 ring-1 ring-slate-200 hover:bg-slate-50"
+                    }`}
+                    onClick={() => {
+                      setAnalyzePanel("saved");
+                      void refreshSavedChannels();
+                    }}
+                  >
+                    Canales guardados
+                  </Btn>
+                </div>
+              </div>
+
+              <div className="h-px w-full bg-slate-100" />
+
+              {analyzePanel === "search" ? (
               <div className="rounded-2xl border border-slate-200 bg-white p-4">
                 <div className="flex flex-wrap items-end justify-between gap-3">
                   <div>
@@ -538,13 +792,19 @@ export default function App() {
                           q: channelSearchQ.trim(),
                           min_subs: String(channelMinSubs || 0),
                           min_views: String(channelMinViews || 0),
+                          category: channelCategory.trim(),
+                          language: channelLang,
                           sort: channelSort,
                           limit: "12",
                         });
                         const r = await fetch(`/api/channels/search?${qs.toString()}`);
                         if (!r.ok) throw new Error(await readApiError(r));
                         const j = (await r.json()) as { channels: ChannelSearchItem[] };
-                        setChannelSearchResults(j.channels || []);
+                        const chans = j.channels || [];
+                        setChannelSearchResults(chans);
+
+                        // No auto-scan here: avoid quota usage.
+                        await refreshSavedChannels();
                       })
                     }
                   >
@@ -552,7 +812,7 @@ export default function App() {
                   </Btn>
                 </div>
 
-                <div className="mt-3 grid gap-3 md:grid-cols-4">
+                <div className="mt-3 grid gap-3 md:grid-cols-6">
                   <div className="md:col-span-2">
                     <Label>Nombre / keyword</Label>
                     <Input value={channelSearchQ} onChange={(e) => setChannelSearchQ(e.target.value)} placeholder="Deep Made Simple" />
@@ -566,10 +826,31 @@ export default function App() {
                     <Input type="number" min={0} value={channelMinViews} onChange={(e) => setChannelMinViews(Number(e.target.value))} />
                   </div>
                   <div>
+                    <Label>Idioma</Label>
+                    <Select value={channelLang} onChange={(e) => setChannelLang(e.target.value as "" | "es" | "en")}>
+                      <option value="">Cualquiera</option>
+                      <option value="es">ES</option>
+                      <option value="en">EN</option>
+                    </Select>
+                  </div>
+                  <div className="md:col-span-2">
+                    <Label>Categoría interna</Label>
+                    <Input value={channelCategory} onChange={(e) => setChannelCategory(e.target.value)} placeholder="Fitness / Finanzas / Motivación..." />
+                    <p className="mt-1 text-[10px] text-slate-500">Se aplica solo a canales ya guardados (perlas) con categoría asignada.</p>
+                  </div>
+                  <div>
                     <Label>Ordenar por</Label>
-                    <Select value={channelSort} onChange={(e) => setChannelSort(e.target.value as "subs" | "views")}>
+                    <Select
+                      value={channelSort}
+                      onChange={(e) =>
+                        setChannelSort(e.target.value as "subs" | "views" | "videos" | "views_per_video" | "views_per_sub")
+                      }
+                    >
                       <option value="subs">Suscriptores</option>
                       <option value="views">Visitas</option>
+                      <option value="videos">Nº vídeos</option>
+                      <option value="views_per_video">Views / vídeo</option>
+                      <option value="views_per_sub">Views / sub</option>
                     </Select>
                   </div>
                 </div>
@@ -578,6 +859,9 @@ export default function App() {
                   <div className="mt-4 grid gap-3 md:grid-cols-2">
                     <div className="space-y-2">
                       {channelSearchResults.map((c) => (
+                        (() => {
+                          const saved = savedById.get(c.channel_id);
+                          return (
                         <button
                           key={c.channel_id}
                           type="button"
@@ -598,8 +882,35 @@ export default function App() {
                               {typeof c.subscribers === "number" ? <span>· subs {c.subscribers}</span> : null}
                               {typeof c.total_views === "number" ? <span>· views {c.total_views}</span> : null}
                             </div>
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {saved?.is_pearl ? (
+                                <>
+                                  <span className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] text-slate-700">
+                                    score {typeof saved.opportunity_score === "number" ? saved.opportunity_score.toFixed(2) : "—"}
+                                  </span>
+                                  <span className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] text-slate-700">
+                                    Δ30d views {fmtK(saved.views_delta_30d)}
+                                  </span>
+                                  <span className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] text-slate-700">
+                                    median {fmtK(saved.median_views)}
+                                  </span>
+                                  <span className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] text-slate-700">
+                                    hit {fmtPct(saved.hit_rate)}
+                                  </span>
+                                  <span className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] text-slate-700">
+                                    up/mo {typeof saved.uploads_per_month_90d === "number" ? saved.uploads_per_month_90d.toFixed(1) : "—"}
+                                  </span>
+                                </>
+                              ) : (
+                                <span className="rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-[10px] text-slate-500">
+                                  sin métricas (marca perla + Sync)
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </button>
+                          );
+                        })()
                       ))}
                     </div>
 
@@ -627,10 +938,32 @@ export default function App() {
                                   title: selectedChannel.title || "",
                                   avatar_url: selectedChannel.avatar_url || "",
                                 });
+                                await refreshSavedChannels();
                               })
                             }
                           >
                             Guardar
+                          </Btn>
+                          <Btn
+                            className="bg-emerald-600 text-white hover:bg-emerald-700"
+                            disabled={!selectedChannel}
+                            onClick={() =>
+                              run("Guardar como perla + Sync", async () => {
+                                if (!selectedChannel) return;
+                                await postJson(`/api/channels/save`, {
+                                  channel_id: selectedChannel.channel_id,
+                                  handle: selectedChannel.handle || "",
+                                  title: selectedChannel.title || "",
+                                  avatar_url: selectedChannel.avatar_url || "",
+                                });
+                                await postJson(`/api/channels/${encodeURIComponent(selectedChannel.channel_id)}/sync`, {
+                                  work: workApplied,
+                                });
+                                await refreshSavedChannels();
+                              })
+                            }
+                          >
+                            Guardar + Sync
                           </Btn>
                           {selectedChannel ? (
                             <a
@@ -655,6 +988,40 @@ export default function App() {
                           <div className="mt-1 text-sm font-semibold text-slate-900">{selectedChannel?.total_views ?? "—"}</div>
                         </div>
                       </div>
+
+                      <div className="mt-3 rounded-2xl border border-slate-200 bg-white p-4">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Checklist Perla</div>
+                            <div className="mt-1 text-sm font-semibold text-slate-900">
+                              {(() => {
+                                const saved = selectedChannel ? savedById.get(selectedChannel.channel_id) : null;
+                                return scorecard(saved).decision;
+                              })()}
+                            </div>
+                          </div>
+                          <div className="text-[11px] text-slate-500">Regla: perla si 3/4 (mediana+hit+comentarios+uploads) salen bien.</div>
+                        </div>
+                        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                          {(() => {
+                            const saved = selectedChannel ? savedById.get(selectedChannel.channel_id) : null;
+                            const sc = scorecard(saved);
+                            return sc.rows.map((r) => (
+                              <div key={r.k} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="text-[11px] font-semibold text-slate-700">{r.k}</div>
+                                  <span className={`rounded-lg border px-2 py-0.5 text-[10px] ${gradeClass(r.g)}`}>{gradeLabel(r.g)}</span>
+                                </div>
+                                <div className="mt-1 text-sm font-semibold text-slate-900">{r.v}</div>
+                                <div className="mt-0.5 text-[10px] text-slate-500">{r.rule}</div>
+                              </div>
+                            ));
+                          })()}
+                        </div>
+                        <p className="mt-3 text-xs text-slate-500">
+                          Para ver métricas, primero marca el canal como perla y ejecuta <b>Guardar + Sync</b>.
+                        </p>
+                      </div>
                       <p className="mt-3 text-xs text-slate-500">
                         Monetización/RPM: se estimará y se podrá editar cuando implementemos el directorio completo.
                       </p>
@@ -668,6 +1035,7 @@ export default function App() {
                               await postJson(`/api/channels/${encodeURIComponent(selectedChannel.channel_id)}/sync`, {
                                 work: workApplied,
                               });
+                              await refreshSavedChannels();
                             })
                           }
                         >
@@ -702,300 +1070,305 @@ export default function App() {
                   </div>
                 ) : null}
               </div>
+              ) : null}
 
-              <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Canal</div>
-                <div className="mt-2 grid gap-3 sm:grid-cols-[1fr_10rem]">
-                  <div>
-                    <Label>@handle / URL / nombre del canal</Label>
-                    <Input value={channelInput} onChange={(e) => setChannelInput(e.target.value)} placeholder="@DeepMadeSimple o https://www.youtube.com/@..." />
-                  </div>
-                  <div>
-                    <Label>Max vídeos</Label>
-                    <Input
-                      type="number"
-                      min={1}
-                      max={50}
-                      value={channelMaxVideos}
-                      onChange={(e) => setChannelMaxVideos(Number(e.target.value))}
-                    />
-                  </div>
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Btn
-                    className="bg-emerald-600 text-white hover:bg-emerald-700"
-                    disabled={!channelInput.trim()}
-                    onClick={() =>
-                      run("Analyze Channel", async () => {
-                        setChannelResult(null);
-                        setChannelLog("");
-                        await postJson(`/api/analyze/channel`, {
-                          work: workApplied,
-                          channel: channelInput.trim(),
-                          lang,
-                          max_videos: channelMaxVideos,
-                        });
-                        setChannelAutoPoll(true);
-                        await refreshAnalyzeChannel();
-                      })
-                    }
-                  >
-                    Analizar canal
-                  </Btn>
-                  <Btn
-                    className="bg-slate-900 text-white hover:bg-slate-800"
-                    onClick={() =>
-                      run("Refrescar canal", async () => {
-                        await refreshAnalyzeChannel();
-                      })
-                    }
-                  >
-                    Refrescar canal
-                  </Btn>
-                </div>
-
-                {channelResult?.videos?.length ? (
-                  <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200">
-                    <table className="w-full text-left text-xs">
-                      <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
-                        <tr>
-                          <th className="px-3 py-2">Vídeo</th>
-                          <th className="px-3 py-2">Hook</th>
-                          <th className="px-3 py-2">Outline</th>
-                          <th className="px-3 py-2">B-roll</th>
-                          <th className="px-3 py-2 text-right">Acción</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 bg-white">
-                        {channelResult.videos.slice(0, 25).map((v) => (
-                          <tr key={v.video_id}>
-                            <td className="px-3 py-2">
-                              <div className="font-medium text-slate-900">{v.title || v.video_id}</div>
-                              <div className="mt-0.5 text-[10px] text-slate-500 font-mono">{v.video_id}</div>
-                            </td>
-                            <td className="px-3 py-2 text-slate-700">{v.insights?.hookPattern || "—"}</td>
-                            <td className="px-3 py-2 text-slate-700">
-                              {v.insights?.sectionOutline?.length ? v.insights.sectionOutline.slice(0, 3).join(" · ") : "—"}
-                            </td>
-                            <td className="px-3 py-2 text-slate-700">
-                              {v.insights?.suggestedBrollThemes?.length ? v.insights.suggestedBrollThemes.slice(0, 4).join(", ") : "—"}
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              <Btn
-                                className="bg-white text-slate-900 ring-1 ring-slate-200 hover:bg-slate-50"
-                                onClick={() => {
-                                  const ins = v.insights;
-                                  const asText = [
-                                    v.title ? `Referencia video: ${v.title}` : "",
-                                    ins?.hookPattern ? `Hook: ${ins.hookPattern}` : "",
-                                    ins?.sectionOutline?.length ? `Outline: ${ins.sectionOutline.join(" | ")}` : "",
-                                    ins?.suggestedBrollThemes?.length ? `B-roll: ${ins.suggestedBrollThemes.join(", ")}` : "",
-                                    ins?.CTAStyle ? `CTA: ${ins.CTAStyle}` : "",
-                                  ]
-                                    .filter(Boolean)
-                                    .join("\n");
-                                  setCtx((prev) => (prev ? `${prev}\n\n${asText}` : asText));
-                                  setActiveTab("create");
-                                }}
-                              >
-                                Enviar a Create
-                              </Btn>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : channelAutoPoll ? (
-                  <p className="mt-3 text-sm text-slate-600">Analizando canal… (auto refresh)</p>
-                ) : (
-                  <p className="mt-3 text-sm text-slate-600">Aquí aparecerán los vídeos del canal analizados.</p>
-                )}
-
-                {channelLog ? (
-                  <details className="mt-3 rounded-2xl border border-slate-200 bg-white p-4">
-                    <summary className="cursor-pointer text-sm font-semibold text-slate-800">Log del canal</summary>
-                    <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-xl bg-slate-950 p-3 font-mono text-[10px] leading-snug text-slate-200">
-                      {channelLog}
-                    </pre>
-                  </details>
-                ) : null}
-              </div>
-
-              <div>
-                <Label>URL de YouTube</Label>
-                <Input value={ytUrl} onChange={(e) => setYtUrl(e.target.value)} placeholder="https://www.youtube.com/watch?v=..." />
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Btn
-                  className="bg-emerald-600 text-white hover:bg-emerald-700"
-                  disabled={!ytUrl.trim()}
-                  onClick={() =>
-                    run("Analyze YouTube", async () => {
-                      setAnalyzeResult(null);
-                      setAnalyzeLog("");
-                      await postJson(`/api/analyze/youtube`, { work: workApplied, url: ytUrl.trim(), lang });
-                      setAnalyzeAutoPoll(true);
-                      await refreshAnalyze();
-                    })
-                  }
-                >
-                  Analizar
-                </Btn>
-                <Btn
-                  className="bg-slate-900 text-white hover:bg-slate-800"
-                  onClick={() =>
-                    run("Refrescar resultado", async () => {
-                      await refreshAnalyze();
-                    })
-                  }
-                >
-                  Refrescar
-                </Btn>
-                <Btn
-                  className="bg-white text-slate-900 ring-1 ring-slate-200 hover:bg-slate-50"
-                  disabled={!analyzeResult?.insights}
-                  onClick={() => {
-                    const ins = analyzeResult?.insights;
-                    const asText = [
-                      analyzeResult?.title ? `Video: ${analyzeResult.title}` : "",
-                      ins?.hookPattern ? `Hook: ${ins.hookPattern}` : "",
-                      ins?.sectionOutline?.length ? `Outline: ${ins.sectionOutline.join(" | ")}` : "",
-                      ins?.suggestedBrollThemes?.length ? `B-roll: ${ins.suggestedBrollThemes.join(", ")}` : "",
-                      ins?.CTAStyle ? `CTA: ${ins.CTAStyle}` : "",
-                    ]
-                      .filter(Boolean)
-                      .join("\n");
-                    setCtx((prev) => (prev ? `${prev}\n\n${asText}` : asText));
-                    setActiveTab("create");
-                  }}
-                >
-                  Enviar a Create
-                </Btn>
-              </div>
-
-              <div className="grid gap-4 lg:grid-cols-[1fr_20rem]">
+              {analyzePanel === "saved" ? (
                 <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                  <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="flex items-end justify-between gap-3">
                     <div>
-                      <div className="text-sm font-semibold text-slate-900">{analyzeResult?.title || "Resultado del análisis"}</div>
-                      <div className="mt-1 text-xs text-slate-500">
-                        {analyzeResult?.channel ? `${analyzeResult.channel} · ` : ""}
-                        {analyzeResult?.video_id ? <span className="font-mono">{analyzeResult.video_id}</span> : "—"}
-                        {typeof analyzeResult?.duration_s === "number" ? ` · ${Math.round(analyzeResult.duration_s)}s` : ""}
-                      </div>
+                      <div className="text-sm font-semibold text-slate-900">Canales guardados</div>
+                      <p className="mt-0.5 text-xs text-slate-500">Directorio interno (Postgres). Selecciona un canal para sincronizar o descargar ZIPs.</p>
                     </div>
-                    {analyzeResult?.url ? (
-                      <a
-                        className="text-xs font-medium text-emerald-700 hover:underline"
-                        href={analyzeResult.url}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Abrir en YouTube
-                      </a>
-                    ) : null}
+                    <Btn
+                      className="bg-slate-900 text-white hover:bg-slate-800"
+                      onClick={() =>
+                        run("Refrescar guardados", async () => {
+                          await refreshSavedChannels();
+                        })
+                      }
+                    >
+                      Refrescar
+                    </Btn>
                   </div>
 
-                  {!analyzeResult ? (
-                    <p className="mt-3 text-sm text-slate-600">Pulsa “Analizar”. El resultado se mostrará aquí en cuanto termine.</p>
-                  ) : null}
+                  <div className="mt-3 grid gap-3 md:grid-cols-6">
+                    <div className="md:col-span-2">
+                      <Label>Buscar</Label>
+                      <Input value={savedQ} onChange={(e) => setSavedQ(e.target.value)} placeholder="motivación, hábitos, fitness..." />
+                    </div>
+                    <div>
+                      <Label>Categoría</Label>
+                      <Input value={savedCategory} onChange={(e) => setSavedCategory(e.target.value)} placeholder="Tecnología" />
+                    </div>
+                    <div className="md:col-span-2">
+                      <Label>Ordenar por</Label>
+                      <Select value={savedSort} onChange={(e) => setSavedSort(e.target.value as typeof savedSort)}>
+                        <option value="opportunity">Opportunity score</option>
+                        <option value="views_delta_30d">Views Δ 30d</option>
+                        <option value="subs_delta_30d">Subs Δ 30d</option>
+                        <option value="median_views">Mediana views (N=50)</option>
+                        <option value="hit_rate">Hit-rate (&gt;=X)</option>
+                        <option value="engagement">Engagement (com/1k)</option>
+                        <option value="uploads_per_month">Uploads / mes</option>
+                        <option value="days_since_upload">Días desde upload</option>
+                        <option value="views_per_sub">Views / sub</option>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label>Hit X views</Label>
+                      <Input
+                        type="number"
+                        min={1000}
+                        step={1000}
+                        value={savedHitViewsThreshold}
+                        onChange={(e) => setSavedHitViewsThreshold(Number(e.target.value))}
+                      />
+                    </div>
+                    <div>
+                      <Label>Min subs</Label>
+                      <Input type="number" min={0} value={savedMinSubs} onChange={(e) => setSavedMinSubs(Number(e.target.value))} />
+                    </div>
+                    <div>
+                      <Label>Min views</Label>
+                      <Input type="number" min={0} value={savedMinViews} onChange={(e) => setSavedMinViews(Number(e.target.value))} />
+                    </div>
+                    <div>
+                      <Label>Min uploads/mes</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        value={savedMinUploadsMonth}
+                        onChange={(e) => setSavedMinUploadsMonth(Number(e.target.value))}
+                      />
+                    </div>
+                    <div>
+                      <Label>Min views/sub</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        value={savedMinViewsPerSub}
+                        onChange={(e) => setSavedMinViewsPerSub(Number(e.target.value))}
+                      />
+                    </div>
+                    <div>
+                      <Label>Min hit-rate %</Label>
+                      <Input type="number" min={0} max={100} value={savedMinHitRate} onChange={(e) => setSavedMinHitRate(Number(e.target.value))} />
+                    </div>
+                    <div className="md:col-span-6">
+                      <Btn
+                        className="bg-emerald-600 text-white hover:bg-emerald-700"
+                        onClick={() =>
+                          run("Aplicar filtros", async () => {
+                            await refreshSavedChannels();
+                          })
+                        }
+                      >
+                        Aplicar
+                      </Btn>
+                    </div>
+                  </div>
 
-                  {analyzeResult?.insights ? (
-                    <div className="mt-4 grid gap-3 md:grid-cols-2">
-                      <div className="rounded-2xl border border-slate-100 bg-slate-50 p-3">
-                        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Hook</div>
-                        <p className="mt-1 text-sm text-slate-800">{analyzeResult.insights.hookPattern || "—"}</p>
-                      </div>
-                      <div className="rounded-2xl border border-slate-100 bg-slate-50 p-3">
-                        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">CTA</div>
-                        <p className="mt-1 text-sm text-slate-800">{analyzeResult.insights.CTAStyle || "—"}</p>
-                      </div>
-                      <div className="rounded-2xl border border-slate-100 bg-slate-50 p-3 md:col-span-2">
-                        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Section outline</div>
-                        {analyzeResult.insights.sectionOutline?.length ? (
-                          <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-800">
-                            {analyzeResult.insights.sectionOutline.map((s, i) => (
-                              <li key={`sec-${i}`}>{s}</li>
-                            ))}
-                          </ul>
+                  <div className="mt-3">
+                    {!selectedSavedChannelId ? (
+                      <div className="space-y-2">
+                        {pearls.length ? (
+                          pearls.map((c) => (
+                            <button
+                              key={c.channel_id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedSavedChannelId(c.channel_id);
+                                void refreshSavedChannelVideos(c.channel_id);
+                              }}
+                              className="flex w-full items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-left transition hover:bg-slate-50"
+                            >
+                              <div className="h-10 w-10 overflow-hidden rounded-xl bg-slate-100">
+                                {c.avatar_url ? <img src={c.avatar_url} alt="" className="h-10 w-10 object-cover" /> : null}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="truncate text-sm font-semibold text-slate-900">{c.title || c.channel_id}</div>
+                                <div className="mt-0.5 text-[10px] text-slate-500 font-mono">{c.channel_id}</div>
+                                {c.internal_category ? <div className="mt-0.5 text-[10px] text-slate-500">cat: {c.internal_category}</div> : null}
+                              </div>
+                            </button>
+                          ))
                         ) : (
-                          <p className="mt-1 text-sm text-slate-800">—</p>
+                          <p className="text-sm text-slate-600">No hay canales guardados todavía.</p>
                         )}
                       </div>
-                      <div className="rounded-2xl border border-slate-100 bg-slate-50 p-3">
-                        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">B-roll themes</div>
-                        <p className="mt-1 text-sm text-slate-800">
-                          {analyzeResult.insights.suggestedBrollThemes?.length ? analyzeResult.insights.suggestedBrollThemes.join(", ") : "—"}
-                        </p>
-                      </div>
-                      <div className="rounded-2xl border border-slate-100 bg-slate-50 p-3">
-                        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Keyword opps</div>
-                        <p className="mt-1 text-sm text-slate-800">
-                          {analyzeResult.insights.keywordOpportunities?.length ? analyzeResult.insights.keywordOpportunities.join(", ") : "—"}
-                        </p>
-                      </div>
-                    </div>
-                  ) : analyzeAutoPoll ? (
-                    <p className="mt-3 text-sm text-slate-600">Analizando… (se refresca automáticamente)</p>
-                  ) : analyzeResult ? (
-                    <p className="mt-3 text-sm text-slate-600">Aún sin insights. Pulsa “Refrescar”.</p>
-                  ) : null}
+                    ) : (
+                      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <Btn
+                            className="bg-white text-slate-900 ring-1 ring-slate-200 hover:bg-slate-50"
+                            onClick={() => {
+                              setSelectedSavedChannelId(null);
+                              setSavedChannelVideos([]);
+                            }}
+                          >
+                            Volver
+                          </Btn>
+                          <Btn
+                            className="bg-slate-900 text-white hover:bg-slate-800"
+                            onClick={() =>
+                              run("Refrescar canal", async () => {
+                                if (!selectedSavedChannelId) return;
+                                await refreshSavedChannels();
+                                await refreshSavedChannelVideos(selectedSavedChannelId);
+                              })
+                            }
+                          >
+                            Refrescar canal
+                          </Btn>
+                        </div>
 
-                  {analyzeResult?.top_comments?.length ? (
-                    <div className="mt-4">
-                      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Top comments</div>
-                      <div className="mt-2 overflow-hidden rounded-2xl border border-slate-200">
-                        <table className="w-full text-left text-xs">
-                          <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
-                            <tr>
-                              <th className="px-3 py-2">Autor</th>
-                              <th className="px-3 py-2">Comentario</th>
-                              <th className="px-3 py-2 text-right">Likes</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-100 bg-white">
-                            {analyzeResult.top_comments.slice(0, 10).map((c, i) => (
-                              <tr key={`c-${i}`}>
-                                <td className="px-3 py-2 text-slate-700">{c.author || "—"}</td>
-                                <td className="px-3 py-2 text-slate-800">{c.text}</td>
-                                <td className="px-3 py-2 text-right text-slate-700">{typeof c.like_count === "number" ? c.like_count : ""}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                        <>
+                          <div className="mt-3 flex flex-wrap items-start justify-between gap-2">
+                            <div>
+                              <div className="text-sm font-semibold text-slate-900">{selectedSavedChannel?.title || selectedSavedChannelId}</div>
+                              <div className="mt-0.5 text-[11px] text-slate-500 font-mono">{selectedSavedChannelId}</div>
+                            </div>
+                            {selectedChannelSyncState ? (
+                              <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                <StatusBadge state={selectedChannelSyncState.state} />
+                                <span className="text-xs text-slate-600">{selectedChannelSyncState.detail}</span>
+                              </div>
+                            ) : null}
+                          </div>
+
+                          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                            <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Opportunity</div>
+                              <div className="mt-1 text-sm font-semibold text-slate-900">
+                                {typeof selectedSavedChannel?.opportunity_score === "number" ? selectedSavedChannel.opportunity_score.toFixed(2) : "—"}
+                              </div>
+                            </div>
+                            <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Views/sub</div>
+                              <div className="mt-1 text-sm font-semibold text-slate-900">
+                                {typeof selectedSavedChannel?.views_per_sub === "number" ? selectedSavedChannel.views_per_sub.toFixed(1) : "—"}
+                              </div>
+                            </div>
+                            <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Duración mediana</div>
+                              <div className="mt-1 text-sm font-semibold text-slate-900">
+                                {typeof selectedSavedChannel?.median_duration_min === "number"
+                                  ? `${selectedSavedChannel.median_duration_min.toFixed(1)} min`
+                                  : "—"}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <Btn
+                              className="bg-emerald-600 text-white hover:bg-emerald-700"
+                              onClick={() =>
+                                run("Sync canal", async () => {
+                                  await postJson(`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/sync`, { work: workApplied });
+                                  await refreshSavedChannels();
+                                  await refreshSavedChannelVideos(selectedSavedChannelId);
+                                })
+                              }
+                            >
+                              Sync now
+                            </Btn>
+                            <a
+                              className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium ring-1 ring-slate-200 hover:bg-slate-50"
+                              href={`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/thumbnails.zip?work=${encodeURIComponent(workApplied)}`}
+                            >
+                              Thumbnails ZIP
+                            </a>
+                            <a
+                              className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium ring-1 ring-slate-200 hover:bg-slate-50"
+                              href={`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/scripts.zip?work=${encodeURIComponent(workApplied)}`}
+                            >
+                              Scripts ZIP
+                            </a>
+                            <a
+                              className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium ring-1 ring-slate-200 hover:bg-slate-50"
+                              href={`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/videos.json?videos_limit=200`}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Descargar JSON
+                            </a>
+                          </div>
+
+                          <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                            <div className="bg-slate-50 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                              Vídeos (preview)
+                            </div>
+                            {savedChannelVideos.length ? (
+                              <div className="max-h-[520px] overflow-auto">
+                                <table className="w-full text-left text-xs">
+                                  <thead className="sticky top-0 bg-white text-[11px] uppercase tracking-wide text-slate-500">
+                                    <tr>
+                                      <th className="px-3 py-2">Vídeo</th>
+                                      <th className="px-3 py-2">Publicado</th>
+                                      <th className="px-3 py-2">Duración</th>
+                                      <th className="px-3 py-2">Views</th>
+                                      <th className="px-3 py-2">Likes</th>
+                                      <th className="px-3 py-2">Com</th>
+                                      <th className="px-3 py-2">V/D</th>
+                                      <th className="px-3 py-2">VPH</th>
+                                      <th className="px-3 py-2">Eng</th>
+                                      <th className="px-3 py-2">Like%</th>
+                                      <th className="px-3 py-2">Com%</th>
+                                      <th className="px-3 py-2 text-right">Acción</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-slate-100">
+                                    {savedChannelVideos.slice(0, 100).map((v) => (
+                                      <tr key={v.video_id} className="bg-white">
+                                        <td className="px-3 py-2">
+                                          <div className="flex items-start gap-2">
+                                            <div className="h-10 w-16 overflow-hidden rounded-lg bg-slate-100">
+                                              {v.thumbnail_url ? <img src={v.thumbnail_url} alt="" className="h-10 w-16 object-cover" /> : null}
+                                            </div>
+                                            <div className="min-w-0">
+                                              <div className="truncate font-medium text-slate-900">{v.title || v.video_id}</div>
+                                              <div className="mt-0.5 text-[10px] text-slate-500 font-mono">{v.video_id}</div>
+                                              <div className="mt-0.5 line-clamp-2 max-w-[420px] text-[10px] text-slate-600">{v.description || ""}</div>
+                                            </div>
+                                          </div>
+                                        </td>
+                                        <td className="px-3 py-2 text-slate-700">{v.published_at ? String(v.published_at).slice(0, 10) : "—"}</td>
+                                        <td className="px-3 py-2 text-slate-700">
+                                          {typeof v.duration_s === "number" ? `${Math.round(v.duration_s / 60)}m` : "—"}
+                                        </td>
+                                        <td className="px-3 py-2 text-slate-700">{fmtK(v.views ?? null)}</td>
+                                        <td className="px-3 py-2 text-slate-700">{fmtK(v.likes ?? null)}</td>
+                                        <td className="px-3 py-2 text-slate-700">{fmtK(v.comments ?? null)}</td>
+                                        <td className="px-3 py-2 text-slate-700">{typeof v.views_per_day === "number" ? fmtK(v.views_per_day) : "—"}</td>
+                                        <td className="px-3 py-2 text-slate-700">{typeof v.vph === "number" ? fmtK(v.vph) : "—"}</td>
+                                        <td className="px-3 py-2 text-slate-700">{typeof v.engagement === "number" ? `${(v.engagement * 100).toFixed(2)}%` : "—"}</td>
+                                        <td className="px-3 py-2 text-slate-700">{typeof v.like_rate === "number" ? `${(v.like_rate * 100).toFixed(2)}%` : "—"}</td>
+                                        <td className="px-3 py-2 text-slate-700">{typeof v.comment_rate === "number" ? `${(v.comment_rate * 100).toFixed(2)}%` : "—"}</td>
+                                        <td className="px-3 py-2 text-right">
+                                          <a
+                                            className="text-xs font-medium text-emerald-700 hover:underline"
+                                            href={`https://www.youtube.com/watch?v=${encodeURIComponent(v.video_id)}`}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                          >
+                                            Abrir
+                                          </a>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            ) : (
+                              <div className="px-3 py-3 text-sm text-slate-600">Sin vídeos. Pulsa “Sync now”.</div>
+                            )}
+                          </div>
+                        </>
                       </div>
-                    </div>
-                  ) : null}
-
-                  <details className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
-                    <summary className="cursor-pointer text-sm font-semibold text-slate-800">Transcripción (preview)</summary>
-                    <p className="mt-1 text-xs text-slate-500">Si el vídeo no tiene transcript accesible, este bloque puede estar vacío.</p>
-                    <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded-xl bg-slate-950 p-3 font-mono text-[10px] leading-snug text-slate-200">
-                      {(analyzeResult as unknown as { transcript?: string })?.transcript || "—"}
-                    </pre>
-                  </details>
-                </div>
-
-                <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Estado</div>
-                  <div className="mt-2 flex items-center justify-between gap-2">
-                    <div className="text-sm font-semibold text-slate-900">Analyze</div>
-                    <StatusBadge state={analyzeAutoPoll ? "running" : analyzeResult?.insights ? "done" : "idle"} />
+                    )}
                   </div>
-                  <p className="mt-2 text-xs text-slate-600">
-                    {analyzeAutoPoll ? "Procesando… (auto refresh)" : analyzeResult?.insights ? "Listo." : "Sin datos."}
-                  </p>
                 </div>
-              </div>
-
-              {analyzeLog ? (
-                <details className="rounded-2xl border border-slate-200 bg-white p-4">
-                  <summary className="cursor-pointer text-sm font-semibold text-slate-800">Log de análisis</summary>
-                  <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-xl bg-slate-950 p-3 font-mono text-[10px] leading-snug text-slate-200">
-                    {analyzeLog}
-                  </pre>
-                </details>
               ) : null}
             </Card>
           ) : null}

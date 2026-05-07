@@ -30,11 +30,18 @@ app = FastAPI(title="Videomaker")
 @app.on_event("startup")
 def _startup():
     # DB opcional: solo se activa si hay NEON_DATABASE_URL configurada.
+    # Si hay URL pero falla la migración, preferimos fallar rápido para no dar 500s raros más tarde.
+    import os
+    import logging
+
+    has_db = bool(os.environ.get("NEON_DATABASE_URL", "").strip() or os.environ.get("DATABASE_URL", "").strip() or os.environ.get("NEON_DATABASE_PATH", "").strip())
+    if not has_db:
+        return
     try:
         run_migrations()
-    except Exception:
-        # No bloqueamos el arranque del backend legacy.
-        pass
+    except Exception as e:
+        logging.getLogger("videomaker").exception("DB migrations failed: %s", e)
+        raise
 
 app.add_middleware(
     CORSMiddleware,

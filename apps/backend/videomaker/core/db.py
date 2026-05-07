@@ -13,7 +13,11 @@ from videomaker import config
 
 
 def database_url() -> str:
-    url = os.environ.get("NEON_DATABASE_URL", "").strip() or os.environ.get("DATABASE_URL", "").strip()
+    url = (
+        os.environ.get("NEON_DATABASE_URL", "").strip()
+        or os.environ.get("DATABASE_URL", "").strip()
+        or os.environ.get("NEON_DATABASE_PATH", "").strip()
+    )
     if not url:
         raise RuntimeError("Falta NEON_DATABASE_URL (o DATABASE_URL) en tu .env.")
     return url

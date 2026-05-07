@@ -26,6 +26,7 @@ from videomaker.pipeline.models import PipelineInputs
 from videomaker.youtube.channel_store import upsert_channel
 from videomaker.youtube.channel_store import (
     insert_video_insights,
+    touch_channel_synced,
     upsert_channel_snapshot,
     upsert_videos,
  )
@@ -193,7 +194,69 @@ def run_analyze_channel(work: str, *, channel: str, lang: str, max_videos: int) 
         set_status(work_dir, state="error", step="analyze_channel", detail=str(e))
 
 
-def run_channel_sync(work: str, *, channel_id: str, max_videos: int = 25, lang: str = "es") -> None:
+def run_channel_scan_lite(work: str, *, channel_id: str, max_videos: int = 50) -> None:
+    """
+    Discovery scan (lite): fetch last N videos + stats only (no transcript, no LLM).
+    Persists channel snapshot + videos so opportunity metrics can be computed.
+    """
+    work_dir = safe_work_dir(work)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    out_log = work_dir / f"channel_{channel_id}_scan.log"
+    try:
+        set_status(work_dir, state="running", step="channel_scan", detail=f"Scan (lite) {channel_id}…")
+        from videomaker.youtube.youtube_analyze import enrich_channels_stats, enrich_videos_metadata, enrich_videos_snippet, list_channel_videos
+
+        # Channel basics + snapshot
+        stats = enrich_channels_stats([channel_id]).get(channel_id) or {}
+        upsert_channel(
+            channel_id=channel_id,
+            handle=(stats.get("handle") or None),
+            title=(stats.get("title") or ""),
+            avatar_url=(stats.get("avatar_url") or None),
+        )
+        upsert_channel_snapshot(
+            channel_id,
+            subscribers=int(stats.get("subscribers") or 0) or None,
+            total_views=int(stats.get("total_views") or 0) or None,
+            video_count=int(stats.get("video_count") or 0) or None,
+        )
+
+        vids = list_channel_videos(channel_id, max_videos=int(max_videos))
+        ids = [v.get("video_id") for v in vids if isinstance(v, dict) and v.get("video_id")]
+        meta = enrich_videos_metadata(ids)
+        snips = enrich_videos_snippet(ids)
+
+        to_upsert = []
+        for vid in ids:
+            md = meta.get(vid) or {}
+            sn = snips.get(vid) or {}
+            to_upsert.append(
+                {
+                    "video_id": vid,
+                    "title": md.get("title") or sn.get("title") or "",
+                    "published_at": md.get("published_at"),
+                    "duration_s": md.get("duration_s"),
+                    "views": md.get("views"),
+                    "likes": md.get("likes"),
+                    "comments": md.get("comments"),
+                    "thumbnail_url": sn.get("thumbnail_url"),
+                    "description": md.get("description") or "",
+                    "tags": md.get("tags") or [],
+                    "category_id": md.get("category_id") or "",
+                    "default_language": md.get("default_language") or "",
+                    "default_audio_language": md.get("default_audio_language") or "",
+                }
+            )
+        upsert_videos(channel_id, to_upsert)
+
+        out_log.write_text(f"ok channel_id={channel_id} videos={len(to_upsert)}\n", encoding="utf-8")
+        set_status(work_dir, state="done", step="channel_scan", detail="Scan (lite) listo.")
+    except Exception as e:
+        out_log.write_text(str(e), encoding="utf-8")
+        set_status(work_dir, state="error", step="channel_scan", detail=str(e))
+
+
+def run_channel_sync(work: str, *, channel_id: str, max_videos: int = 50, lang: str = "es") -> None:
     """
     Sincroniza un canal guardado: refresca métricas + lista de vídeos + insights para N vídeos recientes.
     (MVP) Reutiliza analyze_channel y luego el UI consume el JSON o se migra a tablas.
@@ -234,7 +297,7 @@ def run_channel_sync(work: str, *, channel_id: str, max_videos: int = 25, lang: 
 
         # videos + insights
         videos = report.get("videos") or []
-        # enriquecer thumbnails
+        # enriquecer thumbnails + snippet fields
         from videomaker.youtube.youtube_analyze import enrich_videos_snippet
 
         snips = enrich_videos_snippet([v.get("video_id") for v in videos if isinstance(v, dict) and v.get("video_id")])
@@ -256,6 +319,11 @@ def run_channel_sync(work: str, *, channel_id: str, max_videos: int = 25, lang: 
                     "likes": v.get("likes"),
                     "comments": v.get("comments"),
                     "thumbnail_url": sn.get("thumbnail_url"),
+                    "description": v.get("description") or "",
+                    "tags": v.get("tags") or [],
+                    "category_id": v.get("category_id") or "",
+                    "default_language": v.get("default_language") or "",
+                    "default_audio_language": v.get("default_audio_language") or "",
                 }
             )
             ins = v.get("insights")
@@ -270,6 +338,10 @@ def run_channel_sync(work: str, *, channel_id: str, max_videos: int = 25, lang: 
             pass
         out_json.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         out_log.write_text(log_text, encoding="utf-8")
+        try:
+            touch_channel_synced(report.get("channel_id") or channel_id)
+        except Exception:
+            pass
         set_status(work_dir, state="done", step="channel_sync", detail="Sync listo.")
     except Exception as e:
         out_log.write_text(str(e), encoding="utf-8")

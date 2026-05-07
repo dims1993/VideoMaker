@@ -25,7 +25,10 @@ from videomaker.youtube.channel_store import (
     delete_channel,
     get_channel,
     list_channel_videos,
+    list_channel_videos_detail,
     list_channels,
+    list_channels_opportunities,
+    mark_channel_pearl,
     set_channel_internal_fields,
     upsert_channel,
  )
@@ -349,6 +352,7 @@ def api_channels_search(
     min_subs: int = 0,
     min_views: int = 0,
     category: str = "",
+    language: str = "",
     sort: str = "subs",
     limit: int = 10,
 ):
@@ -360,6 +364,16 @@ def api_channels_search(
 
     base = search_channels(q, max_results=min(int(limit), 25))
     stats = enrich_channels_stats([b["channel_id"] for b in base])
+    lang_f = (language or "").strip().lower()
+    cat_f = (category or "").strip()
+    internal: dict[str, dict] = {}
+    if cat_f or lang_f:
+        try:
+            from videomaker.youtube.channel_store import get_channels_internal_fields
+
+            internal = get_channels_internal_fields([b["channel_id"] for b in base])
+        except Exception:
+            internal = {}
     out = []
     for b in base:
         cid = b["channel_id"]
@@ -370,11 +384,33 @@ def api_channels_search(
             continue
         if int(min_views) and views < int(min_views):
             continue
+        if cat_f or lang_f:
+            meta = internal.get(cid) or {}
+            if cat_f and (meta.get("internal_category") or "") != cat_f:
+                continue
+            if lang_f and (meta.get("language") or "").lower() != lang_f:
+                continue
         out.append({**b, **s, "subscribers": subs, "total_views": views})
+
+    def _views_per_video(x: dict) -> float:
+        views = float(int(x.get("total_views") or 0))
+        vc = float(int(x.get("video_count") or 0))
+        return views / max(1.0, vc)
+
+    def _views_per_sub(x: dict) -> float:
+        views = float(int(x.get("total_views") or 0))
+        subs = float(int(x.get("subscribers") or 0))
+        return views / max(1.0, subs)
 
     key = (sort or "subs").lower().strip()
     if key == "views":
         out.sort(key=lambda x: int(x.get("total_views") or 0), reverse=True)
+    elif key in ("videos", "video_count"):
+        out.sort(key=lambda x: int(x.get("video_count") or 0), reverse=True)
+    elif key in ("views_per_video", "views_video"):
+        out.sort(key=_views_per_video, reverse=True)
+    elif key in ("views_per_sub", "views_sub"):
+        out.sort(key=_views_per_sub, reverse=True)
     else:
         out.sort(key=lambda x: int(x.get("subscribers") or 0), reverse=True)
     return {"channels": out[: max(1, min(int(limit), 50))]}
@@ -387,6 +423,11 @@ class ChannelSaveBody(BaseModel):
     avatar_url: str = ""
 
 
+class ChannelScanBody(WorkModel):
+    channel_ids: list[str] = Field(default_factory=list)
+    max_videos: int = 50
+
+
 @router.post("/channels/save")
 def api_channels_save(body: ChannelSaveBody):
     upsert_channel(
@@ -395,16 +436,64 @@ def api_channels_save(body: ChannelSaveBody):
         title=body.title or "",
         avatar_url=(body.avatar_url or None),
     )
+    try:
+        mark_channel_pearl(body.channel_id, is_pearl=True)
+    except Exception:
+        pass
     return {"ok": True}
 
 
+@router.post("/channels/scan", status_code=202)
+def api_channels_scan(background: BackgroundTasks, body: ChannelScanBody):
+    try:
+        safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    ids = [c.strip() for c in (body.channel_ids or []) if c and c.strip()]
+    ids = [c for c in ids if c.startswith("UC")]
+    ids = ids[:25]
+    for cid in ids:
+        background.add_task(jobs.run_channel_scan_lite, body.work, channel_id=cid, max_videos=int(body.max_videos))
+    return {"started": True, "count": len(ids)}
+
+
 @router.get("/channels")
-def api_channels_list(q: str = "", category: str = "", limit: int = 50):
-    return {"channels": list_channels(q=q, category=category, limit=limit)}
+def api_channels_list(
+    q: str = "",
+    category: str = "",
+    limit: int = 50,
+    sort: str = "opportunity",
+    # filters
+    min_subs: int | None = None,
+    min_views: int | None = None,
+    min_uploads_month: float | None = None,
+    min_views_per_sub: float | None = None,
+    min_hit_rate: float | None = None,
+    # config
+    window_videos: int = 50,
+    hit_views_threshold: int = 50_000,
+    pearls_only: bool = True,
+):
+    return {
+        "channels": list_channels_opportunities(
+            q=q,
+            category=category,
+            limit=limit,
+            sort=sort,
+            min_subs=min_subs,
+            min_views=min_views,
+            min_uploads_month=min_uploads_month,
+            min_views_per_sub=min_views_per_sub,
+            min_hit_rate=min_hit_rate,
+            window_videos=window_videos,
+            hit_views_threshold=hit_views_threshold,
+            pearls_only=bool(pearls_only),
+        )
+    }
 
 
 @router.post("/channels/{channel_id}/sync", status_code=202)
-def api_channel_sync(background: BackgroundTasks, channel_id: str, work: str = "output/ui_session", max_videos: int = 25, lang: str = "es"):
+def api_channel_sync(background: BackgroundTasks, channel_id: str, work: str = "output/ui_session", max_videos: int = 50, lang: str = "es"):
     try:
         safe_work_dir(work)
     except ValueError as e:
@@ -443,13 +532,27 @@ def api_channel_get(channel_id: str, videos_limit: int = 50):
     ch = get_channel(channel_id)
     if not ch:
         raise HTTPException(status_code=404, detail="Canal no encontrado en el directorio.")
-    vids = list_channel_videos(channel_id, limit=int(videos_limit))
+    vids = list_channel_videos_detail(channel_id, limit=int(videos_limit))
     return {"channel": ch, "videos": vids}
+
+
+@router.get("/channels/{channel_id}/videos.json")
+def api_channel_videos_json(channel_id: str, videos_limit: int = 200):
+    ch = get_channel(channel_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail="Canal no encontrado en el directorio.")
+    vids = list_channel_videos_detail(channel_id, limit=int(videos_limit))
+    import json
+    from fastapi.responses import Response
+
+    payload = {"channel": ch, "videos": vids}
+    return Response(content=json.dumps(payload, ensure_ascii=False, indent=2, default=str), media_type="application/json")
 
 
 class ChannelUpdateBody(BaseModel):
     internal_category: str | None = None
     notes: str | None = None
+    language: str | None = None
     rpm_estimate: float | None = None
     monetization_estimate: float | None = None
 
@@ -462,6 +565,7 @@ def api_channel_put(channel_id: str, body: ChannelUpdateBody):
         channel_id,
         internal_category=body.internal_category,
         notes=body.notes,
+        language=body.language,
         rpm_estimate=body.rpm_estimate,
         monetization_estimate=body.monetization_estimate,
     )

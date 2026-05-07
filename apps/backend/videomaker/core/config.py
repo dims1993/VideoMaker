@@ -20,7 +20,7 @@ KEYWORD_WINDOW_AUDIO_S = 10.0
 # Rutas
 # - BACKEND_ROOT: apps/backend
 # - PROJECT_ROOT: raíz del repo (para output/, musica_libre/, voice_samples/, etc.)
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 MUSIC_DIR = PROJECT_ROOT / "musica_libre"
 VOICE_SAMPLES_DIR = PROJECT_ROOT / "voice_samples"
