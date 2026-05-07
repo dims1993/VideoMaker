@@ -1,0 +1,39 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  celery-worker:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+    command: ["celery", "-A", "videomaker.celery_app", "worker", "-l", "info"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      # Para análisis de YouTube (si quieres sync con API)
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+      # Para LLM (si tus tasks lo usan)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-}
+      VIDEOMAKER_LLM_PROVIDER: ${VIDEOMAKER_LLM_PROVIDER:-openai}
+      # DB (si sync guarda en Neon)
+      NEON_DATABASE_URL: ${NEON_DATABASE_URL:-}
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis_data:
+

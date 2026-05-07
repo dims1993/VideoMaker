@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Videomaker</title>
+    <style>
+      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 24px; color: #111827; }
+      .grid { display: grid; grid-template-columns: 360px 1fr; gap: 20px; }
+      .card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px; background: #fff; }
+      .subcard { border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; background: #fff; }
+      .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .muted { color: #6b7280; font-size: 13px; }
+      label { display: block; font-size: 13px; color: #374151; margin-top: 10px; }
+      input[type="text"], textarea, select, input[type="number"] { width: 100%; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 10px; }
+      textarea { min-height: 90px; }
+      button { padding: 9px 12px; border: 0; border-radius: 10px; background: #111827; color: white; cursor: pointer; }
+      button.secondary { background: #374151; }
+      button.ghost { background: #f3f4f6; color: #111827; }
+      .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      .row > * { flex: 1; }
+      code { background: #f3f4f6; padding: 2px 6px; border-radius: 8px; }
+      .ok { color: #065f46; }
+      .bad { color: #991b1b; }
+      hr { border: 0; border-top: 1px solid #e5e7eb; margin: 14px 0; }
+      pre.log { white-space: pre-wrap; background: #0b1220; color: #d1d5db; padding: 12px; border-radius: 12px; font-size: 12px; max-height: 220px; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <h2>Videomaker (FastAPI)</h2>
+    <p class="muted" style="margin: 0 0 8px 0;">Nueva interfaz (React + Tailwind): <a href="/ui?work={{ work | urlencode }}"><strong>/ui</strong></a> (tras <code>npm run build</code> en <code>frontend/</code>).</p>
+    <div class="muted">Carpeta de trabajo: <code>{{ work_dir }}</code></div>
+    <div class="grid" style="margin-top: 14px;">
+      <div class="card">
+        <h3 style="margin: 0 0 6px 0;">Estado</h3>
+        <div class="muted">
+          <div>Guion: {% if has_script %}<span class="ok">OK</span>{% else %}<span class="bad">FALTA</span>{% endif %}</div>
+          <div>Narración: {% if has_narration %}<span class="ok">OK</span>{% else %}<span class="bad">FALTA</span>{% endif %}</div>
+          <div>Stock clips: <b>{{ stock_count }}</b></div>
+          <div>Draft: {% if draft_exists %}<span class="ok">OK</span>{% else %}<span class="bad">FALTA</span>{% endif %}</div>
+        </div>
+        <hr />
+        <h4 style="margin: 0 0 6px 0;">Progreso</h4>
+        <div class="muted" id="statusLine">
+          {{ status.state }}{% if status.step %} · {{ status.step }}{% endif %}{% if status.detail %} — {{ status.detail }}{% endif %}
+        </div>
+        <pre class="log" id="logBox">{{ log_tail }}</pre>
+        <hr />
+        <h4 style="margin: 0 0 6px 0;">Entorno</h4>
+        <div class="muted">
+          <div>Provider: <code>{{ env.VIDEOMAKER_LLM_PROVIDER or "openai" }}</code></div>
+          <div>OPENAI_API_KEY: {% if env.OPENAI_API_KEY %}<span class="ok">SI</span>{% else %}<span class="bad">NO</span>{% endif %}</div>
+          <div>PEXELS_API_KEY: {% if env.PEXELS_API_KEY %}<span class="ok">SI</span>{% else %}<span class="bad">NO</span>{% endif %}</div>
+          <div class="muted">Ollama: <code>{{ env.OLLAMA_BASE_URL or "http://localhost:11434" }}</code> modelo: <code>{{ env.OLLAMA_MODEL or "llama3.2:latest" }}</code></div>
+        </div>
+        <hr />
+        <div class="muted">Si no quieres API, usa Ollama: pon <code>VIDEOMAKER_LLM_PROVIDER=ollama</code> en `.env`.</div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin: 0 0 10px 0;">1) Prompt / Guion</h3>
+        <form method="post" action="/prompt-preview" target="_blank">
+          <input type="hidden" name="work" value="{{ work }}" />
+          <label>Keywords (comas)</label>
+          <input type="text" name="keywords" value="motivación, hábitos, enfoque" />
+          <label>Contexto</label>
+          <textarea name="context"></textarea>
+          <div class="row">
+            <div>
+              <label>Idioma</label>
+              <select name="lang">
+                <option value="es" selected>es</option>
+                <option value="en">en</option>
+              </select>
+            </div>
+            <div>
+              <label>Minutos</label>
+              <input type="number" step="0.5" name="minutes" value="8" />
+            </div>
+          </div>
+          <div style="margin-top: 10px;" class="row">
+            <button class="secondary" type="submit">Ver prompt (sin API)</button>
+          </div>
+        </form>
+
+        <form method="post" action="/generate-script" style="margin-top: 10px;">
+          <input type="hidden" name="work" value="{{ work }}" />
+          <input type="hidden" name="keywords" value="motivación, hábitos, enfoque" />
+          <input type="hidden" name="context" value="" />
+          <input type="hidden" name="lang" value="es" />
+          <input type="hidden" name="minutes" value="8" />
+          <div class="row">
+            <div>
+              <label>Proveedor</label>
+              <select name="provider">
+                <option value="" selected>(usar .env)</option>
+                <option value="ollama">ollama</option>
+                <option value="openai">openai-compatible</option>
+              </select>
+            </div>
+            <div>
+              <label>Modelo (opcional)</label>
+              <input type="text" name="model" placeholder="p.ej. gpt-4o-mini / llama3.2:latest / qwen2.5-coder:7b" />
+            </div>
+          </div>
+          <div style="margin-top: 10px;">
+            <button type="submit">Generar guion → guion.txt</button>
+          </div>
+          <div class="muted" style="margin-top: 6px;">Nota: si no tienes OPENAI_API_KEY, usa Ollama.</div>
+        </form>
+        {% if has_script %}
+          <div style="margin-top: 10px;" class="muted">
+            Guion listo: <a href="/view-script?work={{ work }}" target="_blank">ver guion.txt</a>
+          </div>
+        {% endif %}
+
+        <hr />
+        <h3 style="margin: 0 0 10px 0;">Subir guion.txt</h3>
+        <form method="post" action="/upload-script" enctype="multipart/form-data">
+          <input type="hidden" name="work" value="{{ work }}" />
+          <input type="file" name="file" accept=".txt" />
+          <div style="margin-top: 10px;">
+            <button class="secondary" type="submit">Subir</button>
+          </div>
+        </form>
+
+        <hr />
+        <h3 style="margin: 0 0 10px 0;">2) Narración</h3>
+        <div class="muted" style="margin-bottom: 10px;">Flujo recomendado: 1) prueba la voz → 2) genera <code>narracion.wav</code>.</div>
+
+        <div class="subcard" style="margin-bottom: 12px;">
+          <h4 style="margin:0 0 6px 0;">Clonar voz (XTTS)</h4>
+          <div class="muted">
+            Sube un MP3 (u otro audio) con la voz a imitar: unos <b>15–60 s</b> en silencio razonable y sin música fuerte suelen bastar.
+            Se guarda como <code>clone_reference.wav</code> en esta carpeta de trabajo y se usa en <b>preview</b> y <b>narración</b> con presets <code>xtts_v2_es</code> / <code>xtts_v2_en</code>.
+            Para MP3 hace falta <b>ffmpeg</b> instalado (<code>brew install ffmpeg</code> en Mac).
+          </div>
+          {% if has_clone_reference %}
+            <div style="margin-top: 12px; padding: 10px 12px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px; font-size: 14px; color: #14532d;">
+              <strong>Probar la voz clonada:</strong> baja a <b>Voice Lab</b>, en <b>Voz</b> elige <code>xtts_v2_es</code> (o <code>xtts_v2_en</code> si tu texto es en inglés), escribe una frase en <b>Texto de prueba</b> y pulsa <b>Generar muestra</b>. Al terminar, el reproductor aparece abajo en «Muestras recientes» (el TTS tarda un poco).
+            </div>
+            <div style="margin-top: 10px;" class="row">
+              <div>
+                <div class="muted">Muestra activa (se usará para clonar):</div>
+                <audio controls src="{{ clone_reference_url }}" style="width:100%; margin-top:6px;"></audio>
+              </div>
+              <form method="post" action="/clear-voice-clone" style="align-self: flex-end;">
+                <input type="hidden" name="work" value="{{ work }}" />
+                <button class="ghost" type="submit">Quitar clon</button>
+              </form>
+            </div>
+          {% else %}
+            <div class="muted" style="margin-top: 8px;">No hay muestra subida: XTTS usará la voz integrada del preset.</div>
+          {% endif %}
+          <form method="post" action="/upload-voice-clone" enctype="multipart/form-data" style="margin-top: 10px;">
+            <input type="hidden" name="work" value="{{ work }}" />
+            <input type="file" name="file" accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.webm,.opus,audio/*" />
+            <div style="margin-top: 10px;">
+              <button class="secondary" type="submit">Subir muestra de voz</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="two">
+          <div class="subcard">
+            <h4 style="margin:0 0 6px 0;">Voice Lab (preview)</h4>
+            <div class="muted">Elige motor/preset, escribe una frase y genera un WAV de prueba. La <b>clonación</b> solo funciona con <code>xtts_v2_es</code> o <code>xtts_v2_en</code> si ya subiste una muestra arriba.</div>
+            <form method="post" action="/voice-preview" style="margin-top: 8px;">
+              <input type="hidden" name="work" value="{{ work }}" />
+              <label>Voz</label>
+              <select name="preset">
+                {% for p in voice_presets %}
+                  <option value="{{ p }}" {% if has_clone_reference and p == 'xtts_v2_es' %}selected{% endif %}>{{ p }}</option>
+                {% endfor %}
+              </select>
+              <label>Texto de prueba</label>
+              <input type="text" name="text" value="Hola, esta es una prueba de voz antes de narrar el vídeo." />
+              <div style="margin-top: 10px;" class="row">
+                <button class="secondary" type="submit">Generar muestra</button>
+                <a class="muted" href="/view-script?work={{ work }}" target="_blank" style="align-self:center; text-align:right;">ver guion</a>
+              </div>
+            </form>
+
+            {% if voice_previews and voice_previews|length > 0 %}
+              <div style="margin-top: 12px;">
+                <div class="muted">Muestras recientes:</div>
+                {% for v in voice_previews|reverse %}
+                  <div style="margin-top: 8px;">
+                    <div class="muted"><code>{{ v.name }}</code></div>
+                    <audio controls src="{{ v.url }}"></audio>
+                  </div>
+                {% endfor %}
+              </div>
+            {% endif %}
+          </div>
+
+          <div class="subcard">
+            <h4 style="margin:0 0 6px 0;">Narración completa</h4>
+            <div class="muted">Genera la locución final por fragmentos y concatena en <code>narracion.wav</code>.</div>
+            <form method="post" action="/speak-script" style="margin-top: 8px;">
+              <input type="hidden" name="work" value="{{ work }}" />
+              <label>Voz (igual que en el preview)</label>
+              <select name="preset">
+                {% for p in voice_presets %}
+                  <option value="{{ p }}" {% if has_clone_reference and p == 'xtts_v2_es' %}selected{% endif %}>{{ p }}</option>
+                {% endfor %}
+              </select>
+              <div class="row">
+                <div>
+                  <label>Máx chars por fragmento</label>
+                  <input type="number" name="max_chars" value="900" />
+                </div>
+                <div>
+                  <label>Máx fragmentos (0 = todos)</label>
+                  <input type="number" name="max_segments" value="0" />
+                </div>
+              </div>
+              <div style="margin-top: 10px;">
+                <button type="submit">Generar narracion.wav</button>
+              </div>
+            </form>
+
+            {% if has_narration %}
+              <div style="margin-top: 12px;">
+                <div class="muted">Narración lista:</div>
+                <audio controls src="{{ narration_url }}"></audio>
+              </div>
+            {% endif %}
+          </div>
+        </div>
+
+        <hr />
+        <h3 style="margin: 0 0 10px 0;">3) Stock (Pexels)</h3>
+        <form method="post" action="/stock-fetch">
+          <input type="hidden" name="work" value="{{ work }}" />
+          <div class="row">
+            <div>
+              <label>Idioma hint</label>
+              <select name="lang">
+                <option value="es" selected>es</option>
+                <option value="en">en</option>
+              </select>
+            </div>
+            <div>
+              <label>Max clips</label>
+              <input type="number" name="max_clips" value="25" />
+            </div>
+          </div>
+          <div style="margin-top: 10px;">
+            <button type="submit">Descargar stock/</button>
+          </div>
+        </form>
+
+        <hr />
+        <h3 style="margin: 0 0 10px 0;">4) Render</h3>
+        <form method="post" action="/render-draft">
+          <input type="hidden" name="work" value="{{ work }}" />
+          <label><input type="checkbox" name="no_music" /> Sin música auto</label>
+          <div style="margin-top: 10px;">
+            <button type="submit">Renderizar draft.mp4</button>
+          </div>
+        </form>
+        <div class="muted" style="margin-top: 10px;">El MP4 se guarda en <code>{{ draft_path }}</code>.</div>
+      </div>
+    </div>
+  </body>
+  <script>
+    const work = "{{ work }}";
+    async function refreshStatus() {
+      try {
+        const r = await fetch(`/status?work=${encodeURIComponent(work)}`, { cache: "no-store" });
+        const data = await r.json();
+        const s = data.status || {};
+        const line = `${s.state || "idle"}${s.step ? " · " + s.step : ""}${s.detail ? " — " + s.detail : ""}`;
+        document.getElementById("statusLine").textContent = line;
+        if (typeof data.log_tail === "string") {
+          document.getElementById("logBox").textContent = data.log_tail;
+        }
+      } catch (e) {}
+    }
+    setInterval(refreshStatus, 1500);
+    refreshStatus();
+  </script>
+</html>
+

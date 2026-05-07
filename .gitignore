@@ -1,0 +1,45 @@
+__pycache__/
+*.py[cod]
+.venv/
+.venv-*/
+apps/frontend/node_modules/
+apps/frontend/dist/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Outputs / media / large artifacts
+output/
+.tmp_videomaker/
+*.mp4
+*.wav
+*.mp3
+*.zip
+*.jsonl
+
+# Logs / runtime state
+*.log
+.videomaker_status.json
+.videomaker_log.txt
+.videomaker_*.json
+pipeline_manifest.json
+analyze_*.json
+analyze_*.log
+channel_*_sync.json
+channel_*_sync.log
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+dist/
+build/
+*.egg-info/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/

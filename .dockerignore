@@ -1,0 +1,31 @@
+.git
+.gitignore
+
+# Python virtualenvs
+.venv
+.venv-*
+
+# Frontend
+apps/frontend/node_modules
+apps/frontend/dist
+
+# Outputs / large artifacts
+output
+.tmp_videomaker
+*.mp4
+*.wav
+*.mp3
+*.zip
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Caches
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
