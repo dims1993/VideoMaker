@@ -208,6 +208,7 @@ type SavedChannelItem = {
   avatar_url?: string | null;
   internal_category?: string | null;
   is_pearl?: boolean | null;
+  language?: string | null;
   subscribers?: number | null;
   total_views?: number | null;
   video_count?: number | null;
@@ -364,6 +365,8 @@ export default function App() {
   const [selectedSavedChannelId, setSelectedSavedChannelId] = useState<string | null>(null);
   const [analyzePanel, setAnalyzePanel] = useState<"search" | "saved">("search");
   const [savedChannelVideos, setSavedChannelVideos] = useState<ChannelVideoItem[]>([]);
+  const [editCat, setEditCat] = useState("");
+  const [editLang, setEditLang] = useState<"" | "es" | "en">("");
 
   // Saved channels filters/sort (opportunity discovery)
   const [savedQ, setSavedQ] = useState("");
@@ -524,6 +527,126 @@ export default function App() {
     return `${Math.round(x * 100)}%`;
   }, []);
 
+  const CATEGORY_OPTIONS = useMemo(
+    () => [
+      "Fitness",
+      "Motivation & Habits",
+      "Finance",
+      "Tech",
+      "Education",
+      "Psychology",
+      "Productivity",
+      "Business",
+      "Entertainment",
+      "Other",
+    ],
+    []
+  );
+
+  type MetricGrade = "good" | "mid" | "bad" | "na";
+  function metricPillClass(g: MetricGrade): string {
+    if (g === "good") return "border-sky-200 bg-sky-50 text-sky-900";
+    if (g === "mid") return "border-emerald-200 bg-emerald-50 text-emerald-900";
+    if (g === "bad") return "border-rose-200 bg-rose-50 text-rose-900";
+    return "border-slate-200 bg-slate-50 text-slate-700";
+  }
+
+  function metricPill(value: string, g: MetricGrade) {
+    return <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${metricPillClass(g)}`}>{value}</span>;
+  }
+
+  type ThresholdProfile = {
+    like_good: number;
+    like_mid: number;
+    com_good: number;
+    com_mid: number;
+    eng_good: number;
+    eng_mid: number;
+    vph_good: number;
+    vph_mid: number;
+    vpd_good: number;
+    vpd_mid: number;
+    engsub_good: number;
+    engsub_mid: number;
+  };
+
+  const defaultProfile: ThresholdProfile = {
+    like_good: 0.03,
+    like_mid: 0.015,
+    com_good: 0.003,
+    com_mid: 0.0015,
+    eng_good: 0.035,
+    eng_mid: 0.02,
+    vph_good: 500,
+    vph_mid: 150,
+    vpd_good: 10_000,
+    vpd_mid: 2_000,
+    engsub_good: 0.01,
+    engsub_mid: 0.003,
+  };
+
+  function profileForCategory(cat: string | null | undefined): ThresholdProfile {
+    const c = (cat || "").toLowerCase();
+    // Adjustments by niche (lightweight, tunable later).
+    if (c.includes("finance")) {
+      return { ...defaultProfile, like_good: 0.02, like_mid: 0.012, com_good: 0.002, com_mid: 0.001, eng_good: 0.025, eng_mid: 0.015 };
+    }
+    if (c.includes("tech")) {
+      return { ...defaultProfile, like_good: 0.022, like_mid: 0.012, com_good: 0.002, com_mid: 0.001, eng_good: 0.026, eng_mid: 0.016 };
+    }
+    if (c.includes("education")) {
+      return { ...defaultProfile, like_good: 0.025, like_mid: 0.013, com_good: 0.0025, com_mid: 0.0012, eng_good: 0.03, eng_mid: 0.018 };
+    }
+    if (c.includes("fitness") || c.includes("motivation") || c.includes("habits")) {
+      return { ...defaultProfile, like_good: 0.04, like_mid: 0.02, com_good: 0.0035, com_mid: 0.0018, eng_good: 0.045, eng_mid: 0.025 };
+    }
+    if (c.includes("entertainment")) {
+      return { ...defaultProfile, like_good: 0.035, like_mid: 0.018, com_good: 0.003, com_mid: 0.0015, eng_good: 0.04, eng_mid: 0.022 };
+    }
+    return defaultProfile;
+  }
+
+  const activeThresholdProfile = useMemo(() => profileForCategory(selectedSavedChannel?.internal_category), [selectedSavedChannel?.internal_category]);
+
+  // Discovery thresholds.
+  // Rates are expressed as fractions (e.g. 0.02 = 2%).
+  function gradeLikeRate(x: number | null | undefined): MetricGrade {
+    if (typeof x !== "number" || !Number.isFinite(x)) return "na";
+    if (x >= activeThresholdProfile.like_good) return "good";
+    if (x >= activeThresholdProfile.like_mid) return "mid";
+    return "bad";
+  }
+  function gradeCommentRate(x: number | null | undefined): MetricGrade {
+    if (typeof x !== "number" || !Number.isFinite(x)) return "na";
+    if (x >= activeThresholdProfile.com_good) return "good";
+    if (x >= activeThresholdProfile.com_mid) return "mid";
+    return "bad";
+  }
+  function gradeEngagement(x: number | null | undefined): MetricGrade {
+    if (typeof x !== "number" || !Number.isFinite(x)) return "na";
+    if (x >= activeThresholdProfile.eng_good) return "good";
+    if (x >= activeThresholdProfile.eng_mid) return "mid";
+    return "bad";
+  }
+  function gradeViewsPerDay(x: number | null | undefined): MetricGrade {
+    if (typeof x !== "number" || !Number.isFinite(x)) return "na";
+    if (x >= activeThresholdProfile.vpd_good) return "good";
+    if (x >= activeThresholdProfile.vpd_mid) return "mid";
+    return "bad";
+  }
+  function gradeVph(x: number | null | undefined): MetricGrade {
+    if (typeof x !== "number" || !Number.isFinite(x)) return "na";
+    if (x >= activeThresholdProfile.vph_good) return "good";
+    if (x >= activeThresholdProfile.vph_mid) return "mid";
+    return "bad";
+  }
+  function gradeEngagementPerSub(x: number | null | undefined): MetricGrade {
+    if (typeof x !== "number" || !Number.isFinite(x)) return "na";
+    if (x >= activeThresholdProfile.engsub_good) return "good";
+    if (x >= activeThresholdProfile.engsub_mid) return "mid";
+    return "bad";
+  }
+
   const savedById = useMemo(() => {
     const m = new Map<string, SavedChannelItem>();
     for (const c of savedChannels) m.set(c.channel_id, c);
@@ -560,6 +683,12 @@ export default function App() {
     () => (selectedSavedChannelId ? savedChannels.find((x) => x.channel_id === selectedSavedChannelId) ?? null : null),
     [savedChannels, selectedSavedChannelId]
   );
+
+  useEffect(() => {
+    if (!selectedSavedChannel) return;
+    setEditCat(selectedSavedChannel.internal_category || "");
+    setEditLang(((selectedSavedChannel.language as "" | "es" | "en") || "") as "" | "es" | "en");
+  }, [selectedSavedChannel]);
 
   const selectedChannelSyncState = useMemo(() => {
     const st = session?.status;
@@ -1260,6 +1389,51 @@ export default function App() {
                               </div>
                             </div>
                           </div>
+
+                          <div className="mt-3 rounded-2xl border border-slate-200 bg-white p-4">
+                            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Clasificación (para thresholds)</div>
+                            <div className="mt-2 grid gap-3 sm:grid-cols-3">
+                              <div className="sm:col-span-2">
+                                <Label>Categoría</Label>
+                                <Select value={editCat} onChange={(e) => setEditCat(e.target.value)}>
+                                  <option value="">(sin asignar)</option>
+                                  {CATEGORY_OPTIONS.map((c) => (
+                                    <option key={c} value={c}>
+                                      {c}
+                                    </option>
+                                  ))}
+                                </Select>
+                              </div>
+                              <div>
+                                <Label>Idioma</Label>
+                                <Select value={editLang} onChange={(e) => setEditLang(e.target.value as "" | "es" | "en")}>
+                                  <option value="">(sin asignar)</option>
+                                  <option value="es">ES</option>
+                                  <option value="en">EN</option>
+                                </Select>
+                              </div>
+                            </div>
+                            <div className="mt-3 flex flex-wrap items-center gap-2">
+                              <Btn
+                                className="bg-slate-900 text-white hover:bg-slate-800"
+                                onClick={() =>
+                                  run("Guardar clasificación", async () => {
+                                    if (!selectedSavedChannelId) return;
+                                    await putJson(`/api/channels/${encodeURIComponent(selectedSavedChannelId)}`, {
+                                      internal_category: editCat || null,
+                                      language: editLang || null,
+                                    });
+                                    await refreshSavedChannels();
+                                  })
+                                }
+                              >
+                                Guardar cambios
+                              </Btn>
+                              <span className="text-xs text-slate-500">
+                                Perfil activo: <b>{selectedSavedChannel?.internal_category || "(default)"}</b>
+                              </span>
+                            </div>
+                          </div>
                           <div className="mt-3 flex flex-wrap gap-2">
                             <Btn
                               className="bg-emerald-600 text-white hover:bg-emerald-700"
@@ -1315,6 +1489,7 @@ export default function App() {
                                       <th className="px-3 py-2">Eng</th>
                                       <th className="px-3 py-2">Like%</th>
                                       <th className="px-3 py-2">Com%</th>
+                                      <th className="px-3 py-2">Eng/Sub</th>
                                       <th className="px-3 py-2 text-right">Acción</th>
                                     </tr>
                                   </thead>
@@ -1340,11 +1515,32 @@ export default function App() {
                                         <td className="px-3 py-2 text-slate-700">{fmtK(v.views ?? null)}</td>
                                         <td className="px-3 py-2 text-slate-700">{fmtK(v.likes ?? null)}</td>
                                         <td className="px-3 py-2 text-slate-700">{fmtK(v.comments ?? null)}</td>
-                                        <td className="px-3 py-2 text-slate-700">{typeof v.views_per_day === "number" ? fmtK(v.views_per_day) : "—"}</td>
-                                        <td className="px-3 py-2 text-slate-700">{typeof v.vph === "number" ? fmtK(v.vph) : "—"}</td>
-                                        <td className="px-3 py-2 text-slate-700">{typeof v.engagement === "number" ? `${(v.engagement * 100).toFixed(2)}%` : "—"}</td>
-                                        <td className="px-3 py-2 text-slate-700">{typeof v.like_rate === "number" ? `${(v.like_rate * 100).toFixed(2)}%` : "—"}</td>
-                                        <td className="px-3 py-2 text-slate-700">{typeof v.comment_rate === "number" ? `${(v.comment_rate * 100).toFixed(2)}%` : "—"}</td>
+                                        <td className="px-3 py-2 text-slate-700">
+                                          {typeof v.views_per_day === "number" ? metricPill(fmtK(v.views_per_day), gradeViewsPerDay(v.views_per_day)) : "—"}
+                                        </td>
+                                        <td className="px-3 py-2 text-slate-700">
+                                          {typeof v.vph === "number" ? metricPill(fmtK(v.vph), gradeVph(v.vph)) : "—"}
+                                        </td>
+                                        <td className="px-3 py-2 text-slate-700">
+                                          {typeof v.engagement === "number"
+                                            ? metricPill(`${(v.engagement * 100).toFixed(2)}%`, gradeEngagement(v.engagement))
+                                            : "—"}
+                                        </td>
+                                        <td className="px-3 py-2 text-slate-700">
+                                          {typeof v.like_rate === "number"
+                                            ? metricPill(`${(v.like_rate * 100).toFixed(2)}%`, gradeLikeRate(v.like_rate))
+                                            : "—"}
+                                        </td>
+                                        <td className="px-3 py-2 text-slate-700">
+                                          {typeof v.comment_rate === "number"
+                                            ? metricPill(`${(v.comment_rate * 100).toFixed(2)}%`, gradeCommentRate(v.comment_rate))
+                                            : "—"}
+                                        </td>
+                                        <td className="px-3 py-2 text-slate-700">
+                                          {typeof v.engagement_per_sub === "number"
+                                            ? metricPill(`${(v.engagement_per_sub * 100).toFixed(2)}%`, gradeEngagementPerSub(v.engagement_per_sub))
+                                            : "—"}
+                                        </td>
                                         <td className="px-3 py-2 text-right">
                                           <a
                                             className="text-xs font-medium text-emerald-700 hover:underline"
