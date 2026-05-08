@@ -105,6 +105,16 @@ class AnalyzeChannelBody(WorkModel):
     max_videos: int = 10
 
 
+class ChannelBackfillBody(WorkModel):
+    limit: int = 200
+
+
+class ChannelTranscriptsJsonBody(WorkModel):
+    video_ids: list[str] = Field(default_factory=list, description="Si vacío: usa los últimos N vídeos guardados")
+    limit: int = 50
+    lang: str = "es"
+
+
 class PipelineStartBody(WorkModel):
     keywords: str = "motivación, hábitos, enfoque"
     context: str = ""
@@ -421,6 +431,7 @@ class ChannelSaveBody(BaseModel):
     handle: str = ""
     title: str = ""
     avatar_url: str = ""
+    description: str = ""
 
 
 class ChannelScanBody(WorkModel):
@@ -435,6 +446,7 @@ def api_channels_save(body: ChannelSaveBody):
         handle=(body.handle or None),
         title=body.title or "",
         avatar_url=(body.avatar_url or None),
+        description=(body.description or None),
     )
     try:
         mark_channel_pearl(body.channel_id, is_pearl=True)
@@ -510,6 +522,18 @@ def api_channel_sync(background: BackgroundTasks, channel_id: str, work: str = "
         except Exception:
             pass
     background.add_task(jobs.run_channel_sync, work, channel_id=channel_id, max_videos=int(max_videos), lang=lang)
+    return {"started": True, "mode": "background"}
+
+
+@router.post("/channels/{channel_id}/backfill", status_code=202)
+def api_channel_backfill(background: BackgroundTasks, channel_id: str, body: ChannelBackfillBody):
+    try:
+        safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not get_channel(channel_id):
+        raise HTTPException(status_code=404, detail="Canal no encontrado en el directorio.")
+    background.add_task(jobs.run_channel_videos_backfill, body.work, channel_id=channel_id, limit=int(body.limit))
     return {"started": True, "mode": "background"}
 
 
@@ -644,6 +668,63 @@ def api_channel_scripts_zip(channel_id: str, work: str = "output/ui_session"):
     videos = data.get("videos") or []
     zip_path = build_transcripts_zip(channel_id, videos)
     return FileResponse(str(zip_path), filename="scripts.zip")
+
+
+@router.post("/channels/{channel_id}/transcripts.json")
+def api_channel_transcripts_json(channel_id: str, body: ChannelTranscriptsJsonBody):
+    """
+    Devuelve transcripciones en JSON para vídeos seleccionados (o últimos N).
+    No requiere YouTube Data API key (usa youtube-transcript-api).
+    """
+    from fastapi.responses import Response
+
+    ch = get_channel(channel_id)
+    if not ch:
+        raise HTTPException(status_code=404, detail="Canal no encontrado en el directorio.")
+    try:
+        safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi  # type: ignore
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Falta youtube-transcript-api en el venv.") from e
+
+    want = [v.strip() for v in (body.video_ids or []) if v and v.strip()]
+    if want:
+        vids = [v for v in list_channel_videos_detail(channel_id, limit=max(1, min(len(want), 200))) if (v.get("video_id") in set(want))]
+        # preserva el orden pedido
+        by_id = {v.get("video_id"): v for v in vids}
+        vids = [by_id[i] for i in want if i in by_id]
+    else:
+        vids = list_channel_videos_detail(channel_id, limit=max(1, min(int(body.limit), 200)))
+
+    lang = (body.lang or "es").strip().lower()
+    out_videos: list[dict] = []
+    for v in vids:
+        vid = v.get("video_id") or ""
+        if not vid:
+            continue
+        try:
+            rows = YouTubeTranscriptApi.get_transcript(vid, languages=[lang, "es", "en"])
+        except Exception:
+            rows = []
+        text = "\n".join((r.get("text") or "").strip() for r in rows if (r.get("text") or "").strip()).strip()
+        out_videos.append(
+            {
+                "video_id": vid,
+                "title": v.get("title") or "",
+                "published_at": v.get("published_at"),
+                "transcript": text,
+                "segments": rows,
+            }
+        )
+
+    import json
+
+    payload = {"channel": ch, "count": len(out_videos), "videos": out_videos}
+    return Response(content=json.dumps(payload, ensure_ascii=False, indent=2, default=str), media_type="application/json")
 
 
 @router.get("/pipeline/state")

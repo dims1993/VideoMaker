@@ -16,7 +16,7 @@ services:
     build:
       context: ./apps/backend
       dockerfile: Dockerfile
-    command: ["celery", "-A", "videomaker.celery_app", "worker", "-l", "info"]
+    command: ["celery", "-A", "videomaker.workers.celery_app", "worker", "-l", "info"]
     environment:
       REDIS_URL: redis://redis:6379/0
       # Para análisis de YouTube (si quieres sync con API)

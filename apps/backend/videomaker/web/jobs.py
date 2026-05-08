@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+import traceback
 from pathlib import Path
 
 from videomaker.audio.audio_concat import wav_duration_seconds
@@ -213,6 +214,7 @@ def run_channel_scan_lite(work: str, *, channel_id: str, max_videos: int = 50) -
             handle=(stats.get("handle") or None),
             title=(stats.get("title") or ""),
             avatar_url=(stats.get("avatar_url") or None),
+            description=(stats.get("description") or None),
         )
         upsert_channel_snapshot(
             channel_id,
@@ -267,85 +269,157 @@ def run_channel_sync(work: str, *, channel_id: str, max_videos: int = 50, lang: 
     out_log = work_dir / f"channel_{channel_id}_sync.log"
     try:
         set_status(work_dir, state="running", step="channel_sync", detail=f"Sync canal {channel_id}…")
-        # analyze_channel acepta input genérico; aquí pasamos channel_id directamente.
-        report, log_text = analyze_channel(
-            YoutubeChannelAnalyzeInputs(channel=channel_id, lang=lang, max_videos=int(max_videos))
+        # IMPORTANT: Sync should NOT depend on LLM (Ollama/OpenAI). We persist channel stats + videos first.
+        from videomaker.youtube.youtube_analyze import (
+            enrich_channels_stats,
+            enrich_videos_metadata,
+            enrich_videos_snippet,
+            list_channel_videos,
         )
-        # Persistimos el canal base si no existía.
-        resolved = report.get("resolved") or {}
+
+        resolved = resolve_channel_id(channel_id) if isinstance(channel_id, str) and not channel_id.startswith("UC") else {"channel_id": channel_id}
+        cid = (resolved.get("channel_id") or channel_id) if isinstance(resolved, dict) else channel_id
+
+        # Channel basics + snapshot
+        stats = enrich_channels_stats([cid]).get(cid) or {}
         upsert_channel(
-            channel_id=report.get("channel_id") or channel_id,
-            handle=(resolved.get("handle") or None),
-            title=(resolved.get("title") or ""),
-            avatar_url=None,
+            channel_id=cid,
+            handle=(stats.get("handle") or resolved.get("handle") or None) if isinstance(resolved, dict) else (stats.get("handle") or None),
+            title=(stats.get("title") or resolved.get("title") or "") if isinstance(resolved, dict) else (stats.get("title") or ""),
+            avatar_url=(stats.get("avatar_url") or None),
+            description=(stats.get("description") or None),
         )
-        # snapshot canal
-        try:
-            meta = resolve_channel_id(channel_id) if isinstance(channel_id, str) and not channel_id.startswith("UC") else {"channel_id": channel_id}
-            # enriquecemos stats de canal con channels.list
-            from videomaker.youtube.youtube_analyze import enrich_channels_stats
+        upsert_channel_snapshot(
+            cid,
+            subscribers=int(stats.get("subscribers") or 0) or None,
+            total_views=int(stats.get("total_views") or 0) or None,
+            video_count=int(stats.get("video_count") or 0) or None,
+        )
 
-            stats = enrich_channels_stats([report.get("channel_id") or channel_id]).get(report.get("channel_id") or channel_id) or {}
-            upsert_channel_snapshot(
-                report.get("channel_id") or channel_id,
-                subscribers=int(stats.get("subscribers") or 0) or None,
-                total_views=int(stats.get("total_views") or 0) or None,
-                video_count=int(stats.get("video_count") or 0) or None,
-            )
-        except Exception:
-            pass
-
-        # videos + insights
-        videos = report.get("videos") or []
-        # enriquecer thumbnails + snippet fields
-        from videomaker.youtube.youtube_analyze import enrich_videos_snippet
-
-        snips = enrich_videos_snippet([v.get("video_id") for v in videos if isinstance(v, dict) and v.get("video_id")])
+        vids = list_channel_videos(cid, max_videos=int(max_videos))
+        ids = [v.get("video_id") for v in vids if isinstance(v, dict) and v.get("video_id")]
+        meta = enrich_videos_metadata(ids)
+        snips = enrich_videos_snippet(ids)
         to_upsert = []
-        for v in videos:
-            if not isinstance(v, dict):
-                continue
-            vid = v.get("video_id") or ""
-            if not vid:
-                continue
+        for vid in ids:
+            md = meta.get(vid) or {}
             sn = snips.get(vid) or {}
             to_upsert.append(
                 {
                     "video_id": vid,
-                    "title": v.get("title") or sn.get("title") or "",
-                    "published_at": v.get("published_at"),
-                    "duration_s": v.get("duration_s"),
-                    "views": v.get("views"),
-                    "likes": v.get("likes"),
-                    "comments": v.get("comments"),
+                    "title": md.get("title") or sn.get("title") or "",
+                    "published_at": md.get("published_at"),
+                    "duration_s": md.get("duration_s"),
+                    "views": md.get("views"),
+                    "likes": md.get("likes"),
+                    "comments": md.get("comments"),
                     "thumbnail_url": sn.get("thumbnail_url"),
-                    "description": v.get("description") or "",
-                    "tags": v.get("tags") or [],
-                    "category_id": v.get("category_id") or "",
-                    "default_language": v.get("default_language") or "",
-                    "default_audio_language": v.get("default_audio_language") or "",
+                    "description": md.get("description") or "",
+                    "tags": md.get("tags") or [],
+                    "category_id": md.get("category_id") or "",
+                    "default_language": md.get("default_language") or "",
+                    "default_audio_language": md.get("default_audio_language") or "",
                 }
             )
-            ins = v.get("insights")
-            if isinstance(ins, dict):
-                try:
-                    insert_video_insights(vid, ins)
-                except Exception:
-                    pass
-        try:
-            upsert_videos(report.get("channel_id") or channel_id, to_upsert)
-        except Exception:
-            pass
+
+        upsert_videos(cid, to_upsert)
+
+        report = {
+            "channel_id": cid,
+            "resolved": resolved,
+            "stats": stats,
+            "videos": to_upsert,
+            "note": "sync_lite (no LLM insights)",
+        }
         out_json.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        out_log.write_text(log_text, encoding="utf-8")
+        out_log.write_text(f"ok channel_id={cid} videos={len(to_upsert)}\n", encoding="utf-8")
         try:
-            touch_channel_synced(report.get("channel_id") or channel_id)
+            touch_channel_synced(cid)
         except Exception:
             pass
-        set_status(work_dir, state="done", step="channel_sync", detail="Sync listo.")
+        set_status(work_dir, state="done", step="channel_sync", detail=f"Sync listo: {cid}")
     except Exception as e:
-        out_log.write_text(str(e), encoding="utf-8")
-        set_status(work_dir, state="error", step="channel_sync", detail=str(e))
+        out_log.write_text(f"{e}\n\n{traceback.format_exc()}\n", encoding="utf-8")
+        set_status(work_dir, state="error", step="channel_sync", detail=f"{channel_id}: {e}")
+        raise
+
+
+def run_channel_videos_backfill(work: str, *, channel_id: str, limit: int = 200) -> None:
+    """
+    Backfill description/tags/category/lang for already-stored videos of a channel.
+    Useful for channels saved before we started persisting snippet fields.
+    """
+    work_dir = safe_work_dir(work)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    out_log = work_dir / f"channel_{channel_id}_backfill.log"
+    try:
+        set_status(work_dir, state="running", step="channel_backfill", detail=f"Backfill vídeos {channel_id}…")
+        from videomaker import db
+        from videomaker.youtube.channel_store import upsert_videos
+        from videomaker.youtube.youtube_analyze import enrich_videos_metadata
+
+        limit = max(1, min(int(limit), 500))
+        ids_rows = db.fetch_all(
+            """
+            select video_id
+            from videos
+            where channel_id = %(cid)s
+            order by published_at desc nulls last
+            limit %(limit)s
+            """,
+            {"cid": channel_id, "limit": limit},
+        )
+        ids = [r.get("video_id") for r in ids_rows if isinstance(r, dict) and r.get("video_id")]
+        if not ids:
+            out_log.write_text("no videos found\n", encoding="utf-8")
+            set_status(work_dir, state="done", step="channel_backfill", detail=f"Backfill: no había vídeos ({channel_id}).")
+            return
+
+        existing_rows = db.fetch_all(
+            """
+            select video_id, title, published_at, duration_s, views, likes, comments, thumbnail_url
+            from videos
+            where video_id = any(%(ids)s)
+            """,
+            {"ids": ids},
+        )
+        existing = {r["video_id"]: r for r in existing_rows if isinstance(r, dict) and r.get("video_id")}
+
+        meta = enrich_videos_metadata(ids)
+        to_upsert = []
+        filled = 0
+        for vid in ids:
+            base = existing.get(vid) or {"video_id": vid}
+            md = meta.get(vid) or {}
+            desc = md.get("description") or ""
+            tags = md.get("tags") or []
+            if desc or tags:
+                filled += 1
+            to_upsert.append(
+                {
+                    "video_id": vid,
+                    "title": md.get("title") or base.get("title") or "",
+                    "published_at": md.get("published_at") or base.get("published_at"),
+                    "duration_s": md.get("duration_s") or base.get("duration_s"),
+                    "views": md.get("views") or base.get("views"),
+                    "likes": md.get("likes") or base.get("likes"),
+                    "comments": md.get("comments") or base.get("comments"),
+                    "thumbnail_url": base.get("thumbnail_url"),
+                    "description": desc,
+                    "tags": tags,
+                    "category_id": md.get("category_id") or "",
+                    "default_language": md.get("default_language") or "",
+                    "default_audio_language": md.get("default_audio_language") or "",
+                }
+            )
+        upsert_videos(channel_id, to_upsert)
+
+        out_log.write_text(f"ok channel_id={channel_id} videos={len(ids)} filled={filled}\n", encoding="utf-8")
+        set_status(work_dir, state="done", step="channel_backfill", detail=f"Backfill listo ({channel_id}): {filled}/{len(ids)}.")
+    except Exception as e:
+        out_log.write_text(f"{e}\n\n{traceback.format_exc()}\n", encoding="utf-8")
+        set_status(work_dir, state="error", step="channel_backfill", detail=f"{channel_id}: {e}")
+        raise
 
 
 def run_create_pipeline(

@@ -286,6 +286,7 @@ def enrich_channels_stats(channel_ids: list[str]) -> dict[str, dict[str, Any]]:
             "channel_id": cid,
             "title": sn.get("title") or "",
             "handle": sn.get("customUrl") or "",
+            "description": sn.get("description") or "",
             "avatar_url": avatar,
             "subscribers": st.get("subscriberCount"),
             "total_views": st.get("viewCount"),
@@ -492,11 +493,11 @@ def _llm_provider() -> str:
 def llm_chat(system: str, user: str, *, model: str | None = None) -> str:
     selected = _llm_provider()
     if selected == "ollama":
-        from videomaker.providers.ollama import ollama_chat
+        from videomaker.llm.providers.ollama import ollama_chat
 
         return ollama_chat(system=system, user=user, model=model or os.environ.get("OLLAMA_MODEL", "llama3.2:latest")).strip()
     if selected == "openai":
-        from videomaker.providers.openai_compat import openai_compat_chat
+        from videomaker.llm.providers.openai_compat import openai_compat_chat
 
         return openai_compat_chat(system=system, user=user, model=model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")).strip()
     raise ValueError(f"Proveedor LLM no soportado: {selected}")

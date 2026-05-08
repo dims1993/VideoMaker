@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from videomaker import db
@@ -13,18 +14,26 @@ def upsert_channel(
     handle: str | None,
     title: str,
     avatar_url: str | None,
+    description: str | None = None,
 ) -> None:
     db.execute(
         """
-        insert into channels(channel_id, handle, title, avatar_url)
-        values (%(channel_id)s, %(handle)s, %(title)s, %(avatar_url)s)
+        insert into channels(channel_id, handle, title, avatar_url, description)
+        values (%(channel_id)s, %(handle)s, %(title)s, %(avatar_url)s, %(description)s)
         on conflict (channel_id) do update set
           handle = excluded.handle,
           title = excluded.title,
           avatar_url = excluded.avatar_url,
+          description = excluded.description,
           updated_at = now();
         """,
-        {"channel_id": channel_id, "handle": handle, "title": title or "", "avatar_url": avatar_url},
+        {
+            "channel_id": channel_id,
+            "handle": handle,
+            "title": title or "",
+            "avatar_url": avatar_url,
+            "description": (description or None),
+        },
     )
 
 
@@ -193,6 +202,11 @@ def upsert_videos(channel_id: str, videos: list[dict[str, Any]]) -> None:
         vid = (v.get("video_id") or "").strip()
         if not vid:
             continue
+        tags_val = v.get("tags_json") if v.get("tags_json") is not None else (v.get("tags") or None)
+        # psycopg no serializa automáticamente listas/dicts a JSONB con placeholders pyformat.
+        # Normalizamos a texto JSON para jsonb.
+        if tags_val is not None and not isinstance(tags_val, (str, bytes)):
+            tags_val = json.dumps(tags_val, ensure_ascii=False)
         db.execute(
             """
             insert into videos(
@@ -229,7 +243,7 @@ def upsert_videos(channel_id: str, videos: list[dict[str, Any]]) -> None:
                 "comments": v.get("comments"),
                 "thumbnail_url": v.get("thumbnail_url"),
                 "description": v.get("description") or "",
-                "tags_json": v.get("tags_json") if v.get("tags_json") is not None else (v.get("tags") or None),
+                "tags_json": tags_val,
                 "category_id": v.get("category_id") or None,
                 "default_language": v.get("default_language") or None,
                 "default_audio_language": v.get("default_audio_language") or None,

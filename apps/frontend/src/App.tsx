@@ -1,154 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Btn, Card, Input, Label, Select, StatusBadge, TextArea } from "./components/ui";
+import { deleteReq, postJson, putJson, readApiError } from "./services/api";
+import type { ChannelSearchItem, ChannelVideoItem, SavedChannelItem, Session, TaskStatus } from "./types";
+import { fmtK, fmtPct } from "./utils";
+import { Sidebar } from "./components/common/Sidebar";
+import { SavedChannelDetail } from "./features/dashboard/saved/SavedChannelDetail";
 
-type EnvInfo = {
-  VIDEOMAKER_LLM_PROVIDER?: string;
-  OPENAI_BASE_URL?: string;
-  OPENAI_MODEL?: string;
-  OLLAMA_BASE_URL?: string;
-  OLLAMA_MODEL?: string;
-  OPENAI_API_KEY?: boolean;
-  PEXELS_API_KEY?: boolean;
-};
-
-export type Session = {
-  work: string;
-  work_dir: string;
-  voice_presets: string[];
-  has_script: boolean;
-  has_narration: boolean;
-  has_clone_reference: boolean;
-  stock_count: number;
-  draft_exists: boolean;
-  draft_path: string;
-  env: EnvInfo;
-  status: { state: string; step: string; detail: string };
-  log_tail: string;
-  voice_previews: { name: string; url: string }[];
-  tts_reference?: { mode: string; preview_filename: string | null };
-  narration_versions?: { name: string; url: string; active: boolean }[];
-  active_narration?: string | null;
-  urls: { narration: string; clone_reference: string };
-};
-
-async function readApiError(r: Response): Promise<string> {
-  const t = (await r.json().catch(() => ({}))) as { detail?: unknown };
-  const d = t.detail;
-  return typeof d === "string"
-    ? d
-    : Array.isArray(d)
-      ? d.map((x) => (typeof x === "object" && x && "msg" in x ? String((x as { msg: string }).msg) : String(x))).join("; ")
-      : JSON.stringify(t);
-}
-
-async function postJson<T>(url: string, body: unknown): Promise<T> {
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error((await readApiError(r)) || r.statusText);
-  return r.json() as Promise<T>;
-}
-
-async function putJson<T>(url: string, body: unknown): Promise<T> {
-  const r = await fetch(url, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error((await readApiError(r)) || r.statusText);
-  return r.json() as Promise<T>;
-}
-
-async function deleteReq(url: string): Promise<void> {
-  const r = await fetch(url, { method: "DELETE" });
-  if (!r.ok) throw new Error((await readApiError(r)) || r.statusText);
-}
-
-function Card({
-  title,
-  subtitle,
-  children,
-}: {
-  title: string;
-  subtitle?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm shadow-slate-200/50">
-      <h2 className="text-lg font-semibold tracking-tight text-slate-900">{title}</h2>
-      {subtitle ? <p className="mt-1 text-sm text-slate-500">{subtitle}</p> : null}
-      <div className="mt-4 space-y-3">{children}</div>
-    </section>
-  );
-}
-
-function Label({ children }: { children: React.ReactNode }) {
-  return <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">{children}</label>;
-}
-
-function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
-  return (
-    <input
-      {...props}
-      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2 text-sm text-slate-900 outline-none ring-emerald-500/30 placeholder:text-slate-400 focus:border-emerald-500 focus:bg-white focus:ring-2"
-    />
-  );
-}
-
-function TextArea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return (
-    <textarea
-      {...props}
-      className="mt-1 min-h-[88px] w-full rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2 text-sm text-slate-900 outline-none ring-emerald-500/30 focus:border-emerald-500 focus:bg-white focus:ring-2"
-    />
-  );
-}
-
-function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
-  return (
-    <select
-      {...props}
-      className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-2 text-sm text-slate-900 outline-none focus:border-emerald-500 focus:bg-white focus:ring-2 focus:ring-emerald-500/30"
-    />
-  );
-}
-
-function Btn({ className = "", ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
-  const { className: c2, ...rest } = props;
-  return (
-    <button
-      type="button"
-      {...rest}
-      className={`inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 ${className} ${c2 ?? ""}`}
-    />
-  );
-}
-
-function StatusBadge({ state }: { state: string }) {
-  const map: Record<string, string> = {
-    idle: "bg-slate-100 text-slate-700 ring-slate-200",
-    running: "bg-amber-50 text-amber-900 ring-amber-200",
-    done: "bg-emerald-50 text-emerald-900 ring-emerald-200",
-    error: "bg-rose-50 text-rose-900 ring-rose-200",
-  };
-  return (
-    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ${map[state] ?? map.idle}`}>
-      {state}
-    </span>
-  );
-}
-
-/** Formato backend: `[HH:MM:SS] paso: detalle` */
-type ParsedLogEntry = { time: string; step: string; detail: string; raw: string };
-
-const STEP_LABEL: Record<string, string> = {
-  script: "Guion",
-  voice_preview: "Voz · preview",
-  tts: "Narración",
-  stock: "Stock",
-  render: "Render",
-};
+// (moved to src/types)
 
 type PipelineStepState = {
   id: string;
@@ -165,162 +23,7 @@ type PipelineState = {
   last_error?: string | null;
 };
 
-type AnalyzeReport = {
-  video_id: string;
-  url: string;
-  title?: string;
-  channel?: string;
-  duration_s?: number;
-  transcript_lang?: string | null;
-  top_comments?: { author?: string; text: string; like_count?: number }[];
-  insights?: {
-    hookPattern?: string;
-    sectionOutline?: string[];
-    pacingNotes?: string[];
-    suggestedBrollThemes?: string[];
-    CTAStyle?: string;
-    keywordOpportunities?: string[];
-  };
-};
-
-type ChannelAnalyzeReport = {
-  channel: string;
-  channel_id: string;
-  count: number;
-  videos: AnalyzeReport[];
-};
-
-type ChannelSearchItem = {
-  channel_id: string;
-  title: string;
-  handle?: string;
-  avatar_url?: string | null;
-  subscribers?: number;
-  total_views?: number;
-  video_count?: number;
-  description?: string;
-};
-
-type SavedChannelItem = {
-  channel_id: string;
-  handle?: string | null;
-  title?: string;
-  avatar_url?: string | null;
-  internal_category?: string | null;
-  is_pearl?: boolean | null;
-  language?: string | null;
-  subscribers?: number | null;
-  total_views?: number | null;
-  video_count?: number | null;
-  updated_at?: string | null;
-  last_synced_at?: string | null;
-
-  // Derived opportunity metrics (computed in backend)
-  opportunity_score?: number | null;
-  subs_delta_30d?: number | null;
-  views_delta_30d?: number | null;
-  views_per_sub?: number | null;
-  median_views?: number | null;
-  hit_rate?: number | null;
-  uploads_per_month_90d?: number | null;
-  days_since_last_upload?: number | null;
-  median_duration_min?: number | null;
-  pct_over_8min?: number | null;
-  pct_over_10min?: number | null;
-  likes_per_1k_views?: number | null;
-  comments_per_1k_views?: number | null;
-};
-
-type ChannelVideoItem = {
-  video_id: string;
-  title: string;
-  thumbnail_url?: string | null;
-  description?: string | null;
-  tags_json?: unknown;
-  category_id?: string | null;
-  default_language?: string | null;
-  default_audio_language?: string | null;
-  published_at?: string | null;
-  duration_s?: number | null;
-  views?: number | null;
-  likes?: number | null;
-  comments?: number | null;
-  views_per_day?: number | null;
-  vph?: number | null;
-  engagement?: number | null;
-  like_rate?: number | null;
-  comment_rate?: number | null;
-  engagement_per_sub?: number | null;
-};
-
-function parseLogTail(text: string): ParsedLogEntry[] {
-  const out: ParsedLogEntry[] = [];
-  for (const raw of text.split("\n")) {
-    if (!raw.trim()) continue;
-    const m = raw.match(/^\[(\d{2}:\d{2}:\d{2})\]\s*([^:]+):\s*(.*)$/);
-    if (m) {
-      out.push({ time: m[1], step: m[2].trim(), detail: m[3].trim(), raw });
-    } else {
-      out.push({ time: "", step: "otro", detail: raw.trim(), raw });
-    }
-  }
-  return out;
-}
-
-function stepDotClass(step: string): string {
-  const s = step.toLowerCase();
-  if (s === "script") return "bg-violet-500";
-  if (s === "voice_preview") return "bg-sky-500";
-  if (s === "tts") return "bg-emerald-500";
-  if (s === "stock") return "bg-amber-500";
-  if (s === "render") return "bg-indigo-500";
-  return "bg-slate-400";
-}
-
-function ActivityPanel({ logTail }: { logTail: string }) {
-  const entries = useMemo(() => parseLogTail(logTail), [logTail]);
-  return (
-    <div className="mt-3 border-t border-slate-100 pt-3">
-      <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Historial</h3>
-      <p className="mt-0.5 text-[10px] text-slate-400">Últimas acciones (desde el archivo de sesión)</p>
-      {entries.length === 0 ? (
-        <p className="mt-2 text-xs italic text-slate-400">Sin entradas todavía.</p>
-      ) : (
-        <ul className="mt-2 max-h-52 space-y-2 overflow-y-auto pr-1">
-          {entries.map((e, i) => (
-            <li key={`h-${i}-${e.time}-${e.step}`} className="flex gap-2 text-xs leading-snug">
-              <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${stepDotClass(e.step)}`} title={e.step} />
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                  {e.time ? <span className="font-mono text-[10px] text-slate-400">{e.time}</span> : null}
-                  <span className="font-medium text-slate-700">{STEP_LABEL[e.step] ?? e.step}</span>
-                </div>
-                {e.detail ? <p className="mt-0.5 break-words text-slate-600">{e.detail}</p> : null}
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-function LogRawPanel({ logTail }: { logTail: string }) {
-  return (
-    <details className="group mt-3 border-t border-slate-100 pt-3">
-      <summary className="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-wide text-slate-500 marker:content-none [&::-webkit-details-marker]:hidden">
-        <span className="inline-flex items-center gap-1">
-          Registro técnico
-          <span className="text-slate-400 transition group-open:rotate-180">▾</span>
-        </span>
-      </summary>
-      <p className="mt-1 text-[10px] text-slate-400">`.videomaker_log.txt` — texto crudo para depurar.</p>
-      <pre className="mt-2 max-h-36 overflow-auto rounded-xl bg-slate-950 p-3 font-mono text-[10px] leading-snug text-slate-200 empty:hidden whitespace-pre-wrap">
-        {logTail || "— vacío —"}
-      </pre>
-    </details>
-  );
-}
+// Removed legacy analyze types/panels (not used in current UI).
 
 function initialWorkFromUrl(): string {
   try {
@@ -339,16 +42,7 @@ export default function App() {
   const [busy, setBusy] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<"analyze" | "create">("create");
-  const [ytUrl, setYtUrl] = useState("");
-  const [analyzeResult, setAnalyzeResult] = useState<AnalyzeReport | null>(null);
-  const [analyzeLog, setAnalyzeLog] = useState<string>("");
   const [pipelineState, setPipelineState] = useState<PipelineState | null>(null);
-  const [analyzeAutoPoll, setAnalyzeAutoPoll] = useState(false);
-  const [channelInput, setChannelInput] = useState("");
-  const [channelMaxVideos, setChannelMaxVideos] = useState(10);
-  const [channelResult, setChannelResult] = useState<ChannelAnalyzeReport | null>(null);
-  const [channelLog, setChannelLog] = useState("");
-  const [channelAutoPoll, setChannelAutoPoll] = useState(false);
 
   // New: channel directory/search dashboard
   const [channelSearchQ, setChannelSearchQ] = useState("");
@@ -365,6 +59,7 @@ export default function App() {
   const [selectedSavedChannelId, setSelectedSavedChannelId] = useState<string | null>(null);
   const [analyzePanel, setAnalyzePanel] = useState<"search" | "saved">("search");
   const [savedChannelVideos, setSavedChannelVideos] = useState<ChannelVideoItem[]>([]);
+  const [selectedVideoIds, setSelectedVideoIds] = useState<string[]>([]);
   const [editCat, setEditCat] = useState("");
   const [editLang, setEditLang] = useState<"" | "es" | "en">("");
 
@@ -460,24 +155,6 @@ export default function App() {
     }
   }, [workApplied]);
 
-  const refreshAnalyze = useCallback(async () => {
-    const r = await fetch(`/api/analyze/result?work=${encodeURIComponent(workApplied)}`);
-    if (!r.ok) return;
-    const j = (await r.json()) as { report: AnalyzeReport | null; log: string };
-    setAnalyzeResult(j.report);
-    setAnalyzeLog(j.log || "");
-    if (j.report?.insights) setAnalyzeAutoPoll(false);
-  }, [workApplied]);
-
-  const refreshAnalyzeChannel = useCallback(async () => {
-    const r = await fetch(`/api/analyze/channel-result?work=${encodeURIComponent(workApplied)}`);
-    if (!r.ok) return;
-    const j = (await r.json()) as { report: ChannelAnalyzeReport | null; log: string };
-    setChannelResult(j.report);
-    setChannelLog(j.log || "");
-    if (j.report?.videos?.length) setChannelAutoPoll(false);
-  }, [workApplied]);
-
   const refreshSavedChannels = useCallback(async () => {
     try {
       const qs = new URLSearchParams({
@@ -514,18 +191,30 @@ export default function App() {
     savedSort,
   ]);
 
-  const fmtK = useCallback((n: number | null | undefined) => {
-    if (typeof n !== "number" || !Number.isFinite(n)) return "—";
-    if (Math.abs(n) >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
-    if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-    if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-    return String(Math.round(n));
-  }, []);
+  // fmtK/fmtPct moved to src/utils/format.ts
 
-  const fmtPct = useCallback((x: number | null | undefined) => {
-    if (typeof x !== "number" || !Number.isFinite(x)) return "—";
-    return `${Math.round(x * 100)}%`;
-  }, []);
+  type OpportunityGrade = "bajo" | "medio" | "alto" | "perla" | "sin_datos";
+  function opportunityGrade(score: number | null | undefined): OpportunityGrade {
+    if (typeof score !== "number" || !Number.isFinite(score)) return "sin_datos";
+    if (score >= 6) return "perla";
+    if (score >= 3) return "alto";
+    if (score >= 1) return "medio";
+    return "bajo";
+  }
+  function opportunityLabel(g: OpportunityGrade): string {
+    if (g === "perla") return "Perla";
+    if (g === "alto") return "Alto";
+    if (g === "medio") return "Medio";
+    if (g === "bajo") return "Bajo";
+    return "Sin datos";
+  }
+  function opportunityPillClass(g: OpportunityGrade): string {
+    if (g === "perla") return "border-emerald-200 bg-emerald-50 text-emerald-900";
+    if (g === "alto") return "border-emerald-100 bg-emerald-50/60 text-emerald-900";
+    if (g === "medio") return "border-amber-200 bg-amber-50 text-amber-950";
+    if (g === "bajo") return "border-rose-200 bg-rose-50 text-rose-900";
+    return "border-slate-200 bg-slate-50 text-slate-700";
+  }
 
   const CATEGORY_OPTIONS = useMemo(
     () => [
@@ -666,6 +355,7 @@ export default function App() {
         if (!r.ok) return;
         const j = (await r.json()) as { videos?: ChannelVideoItem[] };
         setSavedChannelVideos(j.videos || []);
+        setSelectedVideoIds([]);
       } catch {
         /* ignore */
       }
@@ -697,6 +387,12 @@ export default function App() {
     if (st.step === "channel_sync" || st.step === "channel_scan") return st;
     return null;
   }, [session?.status, selectedSavedChannelId]);
+
+  const allVisibleVideoIds = useMemo(() => savedChannelVideos.slice(0, 100).map((v) => v.video_id), [savedChannelVideos]);
+  const allSelected = useMemo(
+    () => allVisibleVideoIds.length > 0 && allVisibleVideoIds.every((id) => selectedVideoIds.includes(id)),
+    [allVisibleVideoIds, selectedVideoIds]
+  );
 
   type PerlaGrade = "excelente" | "bueno" | "regular" | "malo" | "sin_datos";
   function gradeLabel(g: PerlaGrade): string {
@@ -761,20 +457,6 @@ export default function App() {
     return () => clearInterval(id);
   }, [refreshPipeline]);
 
-  useEffect(() => {
-    if (activeTab !== "analyze") return;
-    if (!analyzeAutoPoll) return;
-    const id = setInterval(() => void refreshAnalyze(), 1500);
-    return () => clearInterval(id);
-  }, [activeTab, analyzeAutoPoll, refreshAnalyze]);
-
-  useEffect(() => {
-    if (activeTab !== "analyze") return;
-    if (!channelAutoPoll) return;
-    const id = setInterval(() => void refreshAnalyzeChannel(), 2000);
-    return () => clearInterval(id);
-  }, [activeTab, channelAutoPoll, refreshAnalyzeChannel]);
-
   const statusLine = useMemo(() => {
     if (!session) return "";
     const s = session.status;
@@ -793,6 +475,50 @@ export default function App() {
       setBusy(null);
     }
   };
+
+  const sleep = useCallback((ms: number) => new Promise((r) => setTimeout(r, ms)), []);
+
+  const fetchSession = useCallback(async (): Promise<Session | null> => {
+    try {
+      const r = await fetch(`/api/session?work=${encodeURIComponent(workApplied)}`);
+      if (!r.ok) return null;
+      return (await r.json()) as Session;
+    } catch {
+      return null;
+    }
+  }, [workApplied]);
+
+  const waitForChannelJob = useCallback(
+    async (step: "channel_sync" | "channel_backfill", channelId: string, timeoutMs: number = 120_000) => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        await sleep(1000);
+        const s = await fetchSession();
+        if (!s?.status) continue;
+        const st = s.status;
+        const detail = String(st.detail || "");
+        if (st.step === step && detail.includes(channelId) && (st.state === "done" || st.state === "error")) return st;
+      }
+      return null;
+    },
+    [fetchSession, sleep]
+  );
+
+  const waitForTask = useCallback(
+    async (taskId: string, timeoutMs: number = 180_000) => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        await sleep(1200);
+        const r = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`);
+        if (!r.ok) continue;
+        const j = (await r.json()) as TaskStatus;
+        const st = String(j.state || "").toLowerCase();
+        if (st === "success" || st === "failure") return j;
+      }
+      return null;
+    },
+    [sleep]
+  );
 
   useEffect(() => {
     setScriptEditorOpen(false);
@@ -813,55 +539,15 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <aside className="fixed inset-y-0 left-0 z-40 w-[280px] border-r border-slate-200/80 bg-white p-4">
-        <div className="flex items-center justify-between gap-2">
-          <div>
-            <div className="text-base font-bold tracking-tight text-slate-900">Videomaker</div>
-            <div className="mt-0.5 text-[11px] text-slate-500">Desktop · full width</div>
-          </div>
-          {session ? <StatusBadge state={session.status.state} /> : null}
-        </div>
-
-        <div className="mt-4 space-y-2">
-          <Btn
-            className={`w-full ${activeTab === "analyze" ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-white text-slate-900 ring-1 ring-slate-200 hover:bg-slate-50"}`}
-            onClick={() => setActiveTab("analyze")}
-          >
-            Analyse
-          </Btn>
-          <Btn
-            className={`w-full ${activeTab === "create" ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-white text-slate-900 ring-1 ring-slate-200 hover:bg-slate-50"}`}
-            onClick={() => setActiveTab("create")}
-          >
-            Create
-          </Btn>
-        </div>
-
-        <div className="mt-4 rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
-          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Session</div>
-          <p className="mt-2 text-xs leading-relaxed text-slate-600">{statusLine || "…"}</p>
-          <div className="mt-3">
-            <Label>Carpeta de trabajo</Label>
-            <div className="flex gap-2">
-              <Input value={work} onChange={(e) => setWork(e.target.value)} placeholder="output/ui_session" />
-              <Btn className="shrink-0 bg-slate-900 text-white hover:bg-slate-800" onClick={() => setWorkApplied(work.trim() || "output/ui_session")}>
-                OK
-              </Btn>
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-4 rounded-2xl border border-slate-200/80 bg-white p-4 text-xs text-slate-600 shadow-sm">
-          <div className="font-semibold text-slate-800">Entorno</div>
-          <div className="mt-2 space-y-1">
-            <div>
-              Provider: <code className="rounded bg-slate-100 px-1">{String(session?.env.VIDEOMAKER_LLM_PROVIDER || "openai")}</code>
-            </div>
-            <div>OPENAI_API_KEY: {session?.env.OPENAI_API_KEY ? "sí" : "no"}</div>
-            <div>PEXELS_API_KEY: {session?.env.PEXELS_API_KEY ? "sí" : "no"}</div>
-          </div>
-        </div>
-      </aside>
+      <Sidebar
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
+        session={session}
+        statusLine={statusLine}
+        work={work}
+        setWork={setWork}
+        applyWork={() => setWorkApplied(work.trim() || "output/ui_session")}
+      />
 
       <main className="min-h-screen pl-[280px]">
         <div className="p-6">
@@ -1065,6 +751,7 @@ export default function App() {
                                   handle: selectedChannel.handle || "",
                                   title: selectedChannel.title || "",
                                   avatar_url: selectedChannel.avatar_url || "",
+                                  description: selectedChannel.description || "",
                                 });
                                 await refreshSavedChannels();
                               })
@@ -1083,6 +770,7 @@ export default function App() {
                                   handle: selectedChannel.handle || "",
                                   title: selectedChannel.title || "",
                                   avatar_url: selectedChannel.avatar_url || "",
+                                  description: selectedChannel.description || "",
                                 });
                                 await postJson(`/api/channels/${encodeURIComponent(selectedChannel.channel_id)}/sync`, {
                                   work: workApplied,
@@ -1327,240 +1015,95 @@ export default function App() {
                         )}
                       </div>
                     ) : (
-                      <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <Btn
-                            className="bg-white text-slate-900 ring-1 ring-slate-200 hover:bg-slate-50"
-                            onClick={() => {
-                              setSelectedSavedChannelId(null);
-                              setSavedChannelVideos([]);
-                            }}
-                          >
-                            Volver
-                          </Btn>
-                          <Btn
-                            className="bg-slate-900 text-white hover:bg-slate-800"
-                            onClick={() =>
-                              run("Refrescar canal", async () => {
-                                if (!selectedSavedChannelId) return;
-                                await refreshSavedChannels();
-                                await refreshSavedChannelVideos(selectedSavedChannelId);
-                              })
+                      <SavedChannelDetail
+                        selectedSavedChannelId={selectedSavedChannelId}
+                        selectedSavedChannel={selectedSavedChannel}
+                        selectedChannelSyncState={selectedChannelSyncState}
+                        workApplied={workApplied}
+                        editCat={editCat}
+                        setEditCat={setEditCat}
+                        editLang={editLang}
+                        setEditLang={setEditLang}
+                        CATEGORY_OPTIONS={CATEGORY_OPTIONS}
+                        savedChannelVideos={savedChannelVideos}
+                        selectedVideoIds={selectedVideoIds}
+                        setSelectedVideoIds={setSelectedVideoIds}
+                        allSelected={allSelected}
+                        allVisibleVideoIds={allVisibleVideoIds}
+                        opportunityGrade={opportunityGrade}
+                        opportunityLabel={opportunityLabel}
+                        opportunityPillClass={opportunityPillClass}
+                        fmtK={fmtK}
+                        metricPill={metricPill}
+                        gradeViewsPerDay={gradeViewsPerDay}
+                        gradeVph={gradeVph}
+                        gradeEngagement={gradeEngagement}
+                        gradeLikeRate={gradeLikeRate}
+                        gradeCommentRate={gradeCommentRate}
+                        gradeEngagementPerSub={gradeEngagementPerSub}
+                        onBack={() => {
+                          setSelectedSavedChannelId(null);
+                          setSavedChannelVideos([]);
+                        }}
+                        onRefresh={() =>
+                          run("Refrescar canal", async () => {
+                            await refreshSavedChannels();
+                            await refreshSavedChannelVideos(selectedSavedChannelId);
+                          })
+                        }
+                        onSaveClassification={() =>
+                          run("Guardar clasificación", async () => {
+                            await putJson(`/api/channels/${encodeURIComponent(selectedSavedChannelId)}`, {
+                              internal_category: editCat || null,
+                              language: editLang || null,
+                            });
+                            await refreshSavedChannels();
+                          })
+                        }
+                        onSyncNow={() =>
+                          run("Sync canal", async () => {
+                            const res = await postJson<{ mode?: string; task_id?: string }>(
+                              `/api/channels/${encodeURIComponent(selectedSavedChannelId)}/sync`,
+                              { work: workApplied }
+                            );
+                            if (res?.mode === "celery" && res.task_id) {
+                              await waitForTask(res.task_id, 240_000);
+                            } else {
+                              await waitForChannelJob("channel_sync", selectedSavedChannelId, 240_000);
                             }
-                          >
-                            Refrescar canal
-                          </Btn>
-                        </div>
-
-                        <>
-                          <div className="mt-3 flex flex-wrap items-start justify-between gap-2">
-                            <div>
-                              <div className="text-sm font-semibold text-slate-900">{selectedSavedChannel?.title || selectedSavedChannelId}</div>
-                              <div className="mt-0.5 text-[11px] text-slate-500 font-mono">{selectedSavedChannelId}</div>
-                            </div>
-                            {selectedChannelSyncState ? (
-                              <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
-                                <StatusBadge state={selectedChannelSyncState.state} />
-                                <span className="text-xs text-slate-600">{selectedChannelSyncState.detail}</span>
-                              </div>
-                            ) : null}
-                          </div>
-
-                          <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                            <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Opportunity</div>
-                              <div className="mt-1 text-sm font-semibold text-slate-900">
-                                {typeof selectedSavedChannel?.opportunity_score === "number" ? selectedSavedChannel.opportunity_score.toFixed(2) : "—"}
-                              </div>
-                            </div>
-                            <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Views/sub</div>
-                              <div className="mt-1 text-sm font-semibold text-slate-900">
-                                {typeof selectedSavedChannel?.views_per_sub === "number" ? selectedSavedChannel.views_per_sub.toFixed(1) : "—"}
-                              </div>
-                            </div>
-                            <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-                              <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Duración mediana</div>
-                              <div className="mt-1 text-sm font-semibold text-slate-900">
-                                {typeof selectedSavedChannel?.median_duration_min === "number"
-                                  ? `${selectedSavedChannel.median_duration_min.toFixed(1)} min`
-                                  : "—"}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="mt-3 rounded-2xl border border-slate-200 bg-white p-4">
-                            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Clasificación (para thresholds)</div>
-                            <div className="mt-2 grid gap-3 sm:grid-cols-3">
-                              <div className="sm:col-span-2">
-                                <Label>Categoría</Label>
-                                <Select value={editCat} onChange={(e) => setEditCat(e.target.value)}>
-                                  <option value="">(sin asignar)</option>
-                                  {CATEGORY_OPTIONS.map((c) => (
-                                    <option key={c} value={c}>
-                                      {c}
-                                    </option>
-                                  ))}
-                                </Select>
-                              </div>
-                              <div>
-                                <Label>Idioma</Label>
-                                <Select value={editLang} onChange={(e) => setEditLang(e.target.value as "" | "es" | "en")}>
-                                  <option value="">(sin asignar)</option>
-                                  <option value="es">ES</option>
-                                  <option value="en">EN</option>
-                                </Select>
-                              </div>
-                            </div>
-                            <div className="mt-3 flex flex-wrap items-center gap-2">
-                              <Btn
-                                className="bg-slate-900 text-white hover:bg-slate-800"
-                                onClick={() =>
-                                  run("Guardar clasificación", async () => {
-                                    if (!selectedSavedChannelId) return;
-                                    await putJson(`/api/channels/${encodeURIComponent(selectedSavedChannelId)}`, {
-                                      internal_category: editCat || null,
-                                      language: editLang || null,
-                                    });
-                                    await refreshSavedChannels();
-                                  })
-                                }
-                              >
-                                Guardar cambios
-                              </Btn>
-                              <span className="text-xs text-slate-500">
-                                Perfil activo: <b>{selectedSavedChannel?.internal_category || "(default)"}</b>
-                              </span>
-                            </div>
-                          </div>
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            <Btn
-                              className="bg-emerald-600 text-white hover:bg-emerald-700"
-                              onClick={() =>
-                                run("Sync canal", async () => {
-                                  await postJson(`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/sync`, { work: workApplied });
-                                  await refreshSavedChannels();
-                                  await refreshSavedChannelVideos(selectedSavedChannelId);
-                                })
-                              }
-                            >
-                              Sync now
-                            </Btn>
-                            <a
-                              className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium ring-1 ring-slate-200 hover:bg-slate-50"
-                              href={`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/thumbnails.zip?work=${encodeURIComponent(workApplied)}`}
-                            >
-                              Thumbnails ZIP
-                            </a>
-                            <a
-                              className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium ring-1 ring-slate-200 hover:bg-slate-50"
-                              href={`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/scripts.zip?work=${encodeURIComponent(workApplied)}`}
-                            >
-                              Scripts ZIP
-                            </a>
-                            <a
-                              className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium ring-1 ring-slate-200 hover:bg-slate-50"
-                              href={`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/videos.json?videos_limit=200`}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              Descargar JSON
-                            </a>
-                          </div>
-
-                          <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white">
-                            <div className="bg-slate-50 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                              Vídeos (preview)
-                            </div>
-                            {savedChannelVideos.length ? (
-                              <div className="max-h-[520px] overflow-auto">
-                                <table className="w-full text-left text-xs">
-                                  <thead className="sticky top-0 bg-white text-[11px] uppercase tracking-wide text-slate-500">
-                                    <tr>
-                                      <th className="px-3 py-2">Vídeo</th>
-                                      <th className="px-3 py-2">Publicado</th>
-                                      <th className="px-3 py-2">Duración</th>
-                                      <th className="px-3 py-2">Views</th>
-                                      <th className="px-3 py-2">Likes</th>
-                                      <th className="px-3 py-2">Com</th>
-                                      <th className="px-3 py-2">V/D</th>
-                                      <th className="px-3 py-2">VPH</th>
-                                      <th className="px-3 py-2">Eng</th>
-                                      <th className="px-3 py-2">Like%</th>
-                                      <th className="px-3 py-2">Com%</th>
-                                      <th className="px-3 py-2">Eng/Sub</th>
-                                      <th className="px-3 py-2 text-right">Acción</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-slate-100">
-                                    {savedChannelVideos.slice(0, 100).map((v) => (
-                                      <tr key={v.video_id} className="bg-white">
-                                        <td className="px-3 py-2">
-                                          <div className="flex items-start gap-2">
-                                            <div className="h-10 w-16 overflow-hidden rounded-lg bg-slate-100">
-                                              {v.thumbnail_url ? <img src={v.thumbnail_url} alt="" className="h-10 w-16 object-cover" /> : null}
-                                            </div>
-                                            <div className="min-w-0">
-                                              <div className="truncate font-medium text-slate-900">{v.title || v.video_id}</div>
-                                              <div className="mt-0.5 text-[10px] text-slate-500 font-mono">{v.video_id}</div>
-                                              <div className="mt-0.5 line-clamp-2 max-w-[420px] text-[10px] text-slate-600">{v.description || ""}</div>
-                                            </div>
-                                          </div>
-                                        </td>
-                                        <td className="px-3 py-2 text-slate-700">{v.published_at ? String(v.published_at).slice(0, 10) : "—"}</td>
-                                        <td className="px-3 py-2 text-slate-700">
-                                          {typeof v.duration_s === "number" ? `${Math.round(v.duration_s / 60)}m` : "—"}
-                                        </td>
-                                        <td className="px-3 py-2 text-slate-700">{fmtK(v.views ?? null)}</td>
-                                        <td className="px-3 py-2 text-slate-700">{fmtK(v.likes ?? null)}</td>
-                                        <td className="px-3 py-2 text-slate-700">{fmtK(v.comments ?? null)}</td>
-                                        <td className="px-3 py-2 text-slate-700">
-                                          {typeof v.views_per_day === "number" ? metricPill(fmtK(v.views_per_day), gradeViewsPerDay(v.views_per_day)) : "—"}
-                                        </td>
-                                        <td className="px-3 py-2 text-slate-700">
-                                          {typeof v.vph === "number" ? metricPill(fmtK(v.vph), gradeVph(v.vph)) : "—"}
-                                        </td>
-                                        <td className="px-3 py-2 text-slate-700">
-                                          {typeof v.engagement === "number"
-                                            ? metricPill(`${(v.engagement * 100).toFixed(2)}%`, gradeEngagement(v.engagement))
-                                            : "—"}
-                                        </td>
-                                        <td className="px-3 py-2 text-slate-700">
-                                          {typeof v.like_rate === "number"
-                                            ? metricPill(`${(v.like_rate * 100).toFixed(2)}%`, gradeLikeRate(v.like_rate))
-                                            : "—"}
-                                        </td>
-                                        <td className="px-3 py-2 text-slate-700">
-                                          {typeof v.comment_rate === "number"
-                                            ? metricPill(`${(v.comment_rate * 100).toFixed(2)}%`, gradeCommentRate(v.comment_rate))
-                                            : "—"}
-                                        </td>
-                                        <td className="px-3 py-2 text-slate-700">
-                                          {typeof v.engagement_per_sub === "number"
-                                            ? metricPill(`${(v.engagement_per_sub * 100).toFixed(2)}%`, gradeEngagementPerSub(v.engagement_per_sub))
-                                            : "—"}
-                                        </td>
-                                        <td className="px-3 py-2 text-right">
-                                          <a
-                                            className="text-xs font-medium text-emerald-700 hover:underline"
-                                            href={`https://www.youtube.com/watch?v=${encodeURIComponent(v.video_id)}`}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                          >
-                                            Abrir
-                                          </a>
-                                        </td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            ) : (
-                              <div className="px-3 py-3 text-sm text-slate-600">Sin vídeos. Pulsa “Sync now”.</div>
-                            )}
-                          </div>
-                        </>
-                      </div>
+                            await refreshSavedChannels();
+                            await refreshSavedChannelVideos(selectedSavedChannelId);
+                          })
+                        }
+                        onBackfill={() =>
+                          run("Backfill desc/tags", async () => {
+                            await postJson(`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/backfill`, { work: workApplied, limit: 200 });
+                            await waitForChannelJob("channel_backfill", selectedSavedChannelId, 180_000);
+                            await refreshSavedChannelVideos(selectedSavedChannelId);
+                          })
+                        }
+                        onDownloadTranscriptsJson={() =>
+                          run("Descargar transcripts JSON", async () => {
+                            const ids = selectedVideoIds.length ? selectedVideoIds : [];
+                            const r = await fetch(`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/transcripts.json`, {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ work: workApplied, video_ids: ids, limit: 50, lang: editLang || "es" }),
+                            });
+                            if (!r.ok) return;
+                            const text = await r.text();
+                            const blob = new Blob([text], { type: "application/json" });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement("a");
+                            a.href = url;
+                            a.download = `transcripts_${selectedSavedChannelId}.json`;
+                            document.body.appendChild(a);
+                            a.click();
+                            a.remove();
+                            URL.revokeObjectURL(url);
+                          })
+                        }
+                      />
                     )}
                   </div>
                 </div>

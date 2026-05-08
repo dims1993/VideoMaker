@@ -2,7 +2,7 @@
 
 Se activa si REDIS_URL está configurado. Para desarrollo:
   export REDIS_URL=redis://localhost:6379/0
-  celery -A videomaker.celery_app worker -l info
+  celery -A videomaker.workers.celery_app worker -l info
 """
 
 from __future__ import annotations
@@ -28,5 +28,13 @@ celery_app.conf.update(
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
+)
+
+# Ensure tasks are registered when the worker boots.
+# (Celery only knows tasks that have been imported or autodiscovered.)
+celery_app.conf.update(
+    include=[
+        "videomaker.workers.tasks",
+    ]
 )
 
