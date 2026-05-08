@@ -1,15 +1,21 @@
-import { Btn, InfoTip, Label, Select, StatusBadge } from "../../../components/ui";
+import { useState } from "react";
+import { Btn, InfoTip, Input, Label, Select, StatusBadge } from "../../../components/ui";
 import type { ChannelVideoItem, SavedChannelItem } from "../../../types";
 
 type TaskOrStatus = { state: string; detail: string } | null;
 
 type OpportunityGrade = "bajo" | "medio" | "alto" | "perla" | "sin_datos";
 
+type TranscriptSegment = { text?: string; start?: number; duration?: number };
+
 export function SavedChannelDetail(props: {
   selectedSavedChannelId: string;
   selectedSavedChannel: SavedChannelItem | null | undefined;
   selectedChannelSyncState: TaskOrStatus;
   workApplied: string;
+
+  syncMaxVideos: number;
+  setSyncMaxVideos: (n: number) => void;
 
   editCat: string;
   setEditCat: (v: string) => void;
@@ -40,7 +46,7 @@ export function SavedChannelDetail(props: {
   onBack: () => void;
   onRefresh: () => void;
   onSaveClassification: () => void;
-  onSyncNow: () => void;
+  onSyncNow: (maxVideos: number) => void;
   onBackfill: () => void;
   onDownloadTranscriptsJson: () => void;
 }) {
@@ -48,6 +54,8 @@ export function SavedChannelDetail(props: {
     selectedSavedChannelId,
     selectedSavedChannel,
     selectedChannelSyncState,
+    syncMaxVideos,
+    setSyncMaxVideos,
     editCat,
     setEditCat,
     editLang,
@@ -77,6 +85,42 @@ export function SavedChannelDetail(props: {
     onDownloadTranscriptsJson,
     workApplied,
   } = props;
+
+  const [openTranscriptVideoId, setOpenTranscriptVideoId] = useState<string | null>(null);
+  const [transcriptLoading, setTranscriptLoading] = useState(false);
+  const [transcriptErr, setTranscriptErr] = useState<string | null>(null);
+  const [transcriptText, setTranscriptText] = useState("");
+  const [transcriptSegments, setTranscriptSegments] = useState<TranscriptSegment[]>([]);
+
+  const loadTranscript = async (videoId: string) => {
+    if (!videoId) return;
+    setTranscriptErr(null);
+    setTranscriptLoading(true);
+    try {
+      const r = await fetch(`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/transcripts.json`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ work: workApplied, video_ids: [videoId], limit: 1, lang: editLang || "es" }),
+      });
+      if (!r.ok) {
+        const t = await r.text();
+        setTranscriptErr(t || `HTTP ${r.status}`);
+        setTranscriptText("");
+        setTranscriptSegments([]);
+        return;
+      }
+      const j = (await r.json()) as { videos?: { video_id?: string; transcript?: string; segments?: TranscriptSegment[] }[] };
+      const row = (j.videos || []).find((x) => x.video_id === videoId) || (j.videos || [])[0];
+      setTranscriptText((row?.transcript || "").trim());
+      setTranscriptSegments(Array.isArray(row?.segments) ? row!.segments! : []);
+    } catch (e) {
+      setTranscriptErr(e instanceof Error ? e.message : String(e));
+      setTranscriptText("");
+      setTranscriptSegments([]);
+    } finally {
+      setTranscriptLoading(false);
+    }
+  };
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -185,36 +229,52 @@ export function SavedChannelDetail(props: {
         </div>
       </div>
 
-      <div className="mt-3 flex flex-wrap gap-2">
-        <Btn className="bg-emerald-600 text-white hover:bg-emerald-700" onClick={onSyncNow}>
-          Sync now
-        </Btn>
-        <Btn className="bg-slate-900 text-white hover:bg-slate-800" onClick={onBackfill}>
-          Backfill desc/tags
-        </Btn>
-        <Btn className="bg-indigo-600 text-white hover:bg-indigo-700" onClick={onDownloadTranscriptsJson}>
-          Transcripts JSON
-        </Btn>
-        <a
-          className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium ring-1 ring-slate-200 hover:bg-slate-50"
-          href={`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/thumbnails.zip?work=${encodeURIComponent(workApplied)}`}
-        >
-          Thumbnails ZIP
-        </a>
-        <a
-          className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium ring-1 ring-slate-200 hover:bg-slate-50"
-          href={`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/scripts.zip?work=${encodeURIComponent(workApplied)}`}
-        >
-          Scripts ZIP
-        </a>
-        <a
-          className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium ring-1 ring-slate-200 hover:bg-slate-50"
-          href={`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/videos.json?videos_limit=200`}
-          target="_blank"
-          rel="noreferrer"
-        >
-          Descargar JSON
-        </a>
+      <div className="mt-3 flex flex-wrap items-end justify-between gap-2">
+        <div className="flex flex-wrap gap-2">
+          <Btn className="bg-slate-900 text-white hover:bg-slate-800" onClick={onBackfill}>
+            Backfill desc/tags
+          </Btn>
+          <Btn className="bg-indigo-600 text-white hover:bg-indigo-700" onClick={onDownloadTranscriptsJson}>
+            Transcripts JSON
+          </Btn>
+          <a
+            className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium ring-1 ring-slate-200 hover:bg-slate-50"
+            href={`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/thumbnails.zip?work=${encodeURIComponent(workApplied)}`}
+          >
+            Thumbnails ZIP
+          </a>
+          <a
+            className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium ring-1 ring-slate-200 hover:bg-slate-50"
+            href={`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/scripts.zip?work=${encodeURIComponent(workApplied)}`}
+          >
+            Scripts ZIP
+          </a>
+          <a
+            className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium ring-1 ring-slate-200 hover:bg-slate-50"
+            href={`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/videos.json?videos_limit=200`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Descargar JSON
+          </a>
+        </div>
+
+        <div className="flex flex-wrap items-end justify-end gap-2">
+          <div className="w-[120px]">
+            <Label>Máx. vídeos</Label>
+            <Input
+              type="number"
+              min={1}
+              max={200}
+              step={1}
+              value={syncMaxVideos}
+              onChange={(e) => setSyncMaxVideos(Number(e.target.value))}
+            />
+          </div>
+          <Btn className="bg-emerald-600 text-white hover:bg-emerald-700" onClick={() => onSyncNow(syncMaxVideos)}>
+            Sync now
+          </Btn>
+        </div>
       </div>
 
       <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white">
@@ -352,19 +412,86 @@ export function SavedChannelDetail(props: {
                         : "—"}
                     </td>
                     <td className="px-3 py-2 text-right">
-                      <a
-                        className="text-xs font-medium text-emerald-700 hover:underline"
-                        href={`https://www.youtube.com/watch?v=${encodeURIComponent(v.video_id)}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Abrir
-                      </a>
+                      <div className="flex items-center justify-end gap-3">
+                        <button
+                          type="button"
+                          className="text-xs font-medium text-slate-700 hover:underline"
+                          onClick={() => {
+                            const next = openTranscriptVideoId === v.video_id ? null : v.video_id;
+                            setOpenTranscriptVideoId(next);
+                            if (next) void loadTranscript(next);
+                          }}
+                        >
+                          Transcripts
+                        </button>
+                        <a
+                          className="text-xs font-medium text-emerald-700 hover:underline"
+                          href={`https://www.youtube.com/watch?v=${encodeURIComponent(v.video_id)}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Abrir
+                        </a>
+                      </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+
+            {openTranscriptVideoId ? (
+              <div className="border-t border-slate-200 bg-white p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-xs font-semibold text-slate-900">Transcripts · {openTranscriptVideoId}</div>
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-slate-600 hover:underline"
+                    onClick={() => setOpenTranscriptVideoId(null)}
+                  >
+                    Cerrar
+                  </button>
+                </div>
+
+                {transcriptLoading ? <div className="mt-2 text-xs text-slate-600">Cargando…</div> : null}
+                {transcriptErr ? <div className="mt-2 text-xs text-rose-700">{transcriptErr}</div> : null}
+
+                {!transcriptLoading && !transcriptErr ? (
+                  <div className="mt-2 grid gap-3 md:grid-cols-2">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                        Texto ({transcriptText ? transcriptText.length : 0} chars)
+                      </div>
+                      <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-[11px] leading-snug text-slate-800">
+                        {transcriptText || "— (sin transcript) —"}
+                      </pre>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                        Segmentos ({transcriptSegments.length})
+                      </div>
+                      {transcriptSegments.length ? (
+                        <div className="mt-2 max-h-64 overflow-auto space-y-2">
+                          {transcriptSegments.slice(0, 120).map((s, idx) => (
+                            <div key={`${idx}-${s.start ?? 0}`} className="rounded-lg border border-slate-200 bg-white p-2">
+                              <div className="text-[10px] text-slate-500">
+                                {typeof s.start === "number" ? `${s.start.toFixed(2)}s` : "—"}{" "}
+                                {typeof s.duration === "number" ? `(+${s.duration.toFixed(2)}s)` : ""}
+                              </div>
+                              <div className="text-[11px] text-slate-800">{(s.text || "").trim()}</div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-xs text-slate-600">— (sin segmentos) —</div>
+                      )}
+                      {transcriptSegments.length > 120 ? (
+                        <div className="mt-2 text-[10px] text-slate-500">Mostrando primeros 120 segmentos.</div>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         ) : (
           <div className="p-4 text-sm text-slate-600">No hay vídeos todavía. Pulsa “Sync now”.</div>

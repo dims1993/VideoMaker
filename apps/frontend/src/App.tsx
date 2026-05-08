@@ -62,6 +62,7 @@ export default function App() {
   const [selectedVideoIds, setSelectedVideoIds] = useState<string[]>([]);
   const [editCat, setEditCat] = useState("");
   const [editLang, setEditLang] = useState<"" | "es" | "en">("");
+  const [syncMaxVideos, setSyncMaxVideos] = useState(50);
 
   // Saved channels filters/sort (opportunity discovery)
   const [savedQ, setSavedQ] = useState("");
@@ -991,24 +992,50 @@ export default function App() {
                       <div className="space-y-2">
                         {pearls.length ? (
                           pearls.map((c) => (
-                            <button
+                            <div
                               key={c.channel_id}
-                              type="button"
-                              onClick={() => {
-                                setSelectedSavedChannelId(c.channel_id);
-                                void refreshSavedChannelVideos(c.channel_id);
-                              }}
                               className="flex w-full items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-left transition hover:bg-slate-50"
                             >
                               <div className="h-10 w-10 overflow-hidden rounded-xl bg-slate-100">
                                 {c.avatar_url ? <img src={c.avatar_url} alt="" className="h-10 w-10 object-cover" /> : null}
                               </div>
-                              <div className="min-w-0 flex-1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedSavedChannelId(c.channel_id);
+                                setSyncMaxVideos(50);
+                                  void refreshSavedChannelVideos(c.channel_id);
+                                }}
+                                className="min-w-0 flex-1 text-left"
+                                title="Abrir canal"
+                              >
                                 <div className="truncate text-sm font-semibold text-slate-900">{c.title || c.channel_id}</div>
-                                <div className="mt-0.5 text-[10px] text-slate-500 font-mono">{c.channel_id}</div>
+                                <div className="mt-0.5 font-mono text-[10px] text-slate-500">{c.channel_id}</div>
                                 {c.internal_category ? <div className="mt-0.5 text-[10px] text-slate-500">cat: {c.internal_category}</div> : null}
-                              </div>
-                            </button>
+                              </button>
+
+                              <button
+                                type="button"
+                                className="inline-flex items-center justify-center rounded-xl bg-white px-3 py-2 text-xs font-medium text-slate-700 ring-1 ring-slate-200 hover:bg-rose-50 hover:text-rose-700"
+                                title="Eliminar canal"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  const ok = window.confirm(
+                                    `¿Eliminar el canal "${c.title || c.channel_id}"?\n\nEsto borrará también vídeos y assets asociados.`
+                                  );
+                                  if (!ok) return;
+                                  void run("Eliminar canal", async () => {
+                                    await deleteReq(`/api/channels/${encodeURIComponent(c.channel_id)}`);
+                                    setSelectedSavedChannelId(null);
+                                    setSavedChannelVideos([]);
+                                    await refreshSavedChannels();
+                                  });
+                                }}
+                              >
+                                Eliminar
+                              </button>
+                            </div>
                           ))
                         ) : (
                           <p className="text-sm text-slate-600">No hay canales guardados todavía.</p>
@@ -1020,6 +1047,8 @@ export default function App() {
                         selectedSavedChannel={selectedSavedChannel}
                         selectedChannelSyncState={selectedChannelSyncState}
                         workApplied={workApplied}
+                        syncMaxVideos={syncMaxVideos}
+                        setSyncMaxVideos={setSyncMaxVideos}
                         editCat={editCat}
                         setEditCat={setEditCat}
                         editLang={editLang}
@@ -1060,11 +1089,14 @@ export default function App() {
                             await refreshSavedChannels();
                           })
                         }
-                        onSyncNow={() =>
+                        onSyncNow={(maxVideos) =>
                           run("Sync canal", async () => {
+                            const mv = Math.max(1, Math.min(Number.isFinite(maxVideos) ? Math.floor(maxVideos) : 50, 200));
                             const res = await postJson<{ mode?: string; task_id?: string }>(
-                              `/api/channels/${encodeURIComponent(selectedSavedChannelId)}/sync`,
-                              { work: workApplied }
+                              `/api/channels/${encodeURIComponent(selectedSavedChannelId)}/sync?work=${encodeURIComponent(workApplied)}&max_videos=${encodeURIComponent(
+                                String(mv)
+                              )}`,
+                              {}
                             );
                             if (res?.mode === "celery" && res.task_id) {
                               await waitForTask(res.task_id, 240_000);
