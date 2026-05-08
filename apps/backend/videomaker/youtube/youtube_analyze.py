@@ -479,7 +479,7 @@ def fetch_transcript(video_id: str, *, lang: str = "es") -> tuple[str | None, st
         if x not in langs:
             langs.append(x)
     try:
-        rows = YouTubeTranscriptApi.get_transcript(video_id, languages=langs)
+        rows = YouTubeTranscriptApi().fetch(video_id, languages=langs)
     except Exception:
         return None, ""
     text = "\n".join((r.get("text") or "").strip() for r in rows if (r.get("text") or "").strip())

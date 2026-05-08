@@ -101,6 +101,7 @@ def build_transcripts_zip(channel_id: str, videos: list[dict[str, Any]], *, lang
         from youtube_transcript_api import YouTubeTranscriptApi  # type: ignore
     except Exception as e:
         raise RuntimeError("Falta youtube-transcript-api en el venv.") from e
+    ytt = YouTubeTranscriptApi()
 
     with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as z:
         manifest = {"channel_id": channel_id, "count": len(videos), "lang": lang}
@@ -111,7 +112,7 @@ def build_transcripts_zip(channel_id: str, videos: list[dict[str, Any]], *, lang
             if not vid:
                 continue
             try:
-                rows = YouTubeTranscriptApi.get_transcript(vid, languages=[lang, "es", "en"])
+                rows = ytt.fetch(vid, languages=[lang, "es", "en"])
                 text = "\n".join((r.get("text") or "").strip() for r in rows if (r.get("text") or "").strip()).strip()
             except Exception:
                 text = ""

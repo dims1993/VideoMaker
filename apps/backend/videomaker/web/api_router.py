@@ -690,12 +690,15 @@ def api_channel_transcripts_json(channel_id: str, body: ChannelTranscriptsJsonBo
         from youtube_transcript_api import YouTubeTranscriptApi  # type: ignore
     except Exception as e:
         raise HTTPException(status_code=400, detail="Falta youtube-transcript-api en el venv.") from e
+    ytt = YouTubeTranscriptApi()
 
     want = [v.strip() for v in (body.video_ids or []) if v and v.strip()]
     if want:
-        vids = [v for v in list_channel_videos_detail(channel_id, limit=max(1, min(len(want), 200))) if (v.get("video_id") in set(want))]
+        from videomaker.youtube.channel_store import list_channel_videos_detail_by_ids
+
+        vids_raw = list_channel_videos_detail_by_ids(channel_id, video_ids=want)
         # preserva el orden pedido
-        by_id = {v.get("video_id"): v for v in vids}
+        by_id = {v.get("video_id"): v for v in vids_raw}
         vids = [by_id[i] for i in want if i in by_id]
     else:
         vids = list_channel_videos_detail(channel_id, limit=max(1, min(int(body.limit), 200)))
@@ -706,18 +709,60 @@ def api_channel_transcripts_json(channel_id: str, body: ChannelTranscriptsJsonBo
         vid = v.get("video_id") or ""
         if not vid:
             continue
+        err: str | None = None
         try:
-            rows = YouTubeTranscriptApi.get_transcript(vid, languages=[lang, "es", "en"])
-        except Exception:
+            rows = ytt.fetch(vid, languages=[lang, "es", "en"])
+        except Exception as e:
+            # Fallback: try to list available transcripts and pick the first one.
             rows = []
-        text = "\n".join((r.get("text") or "").strip() for r in rows if (r.get("text") or "").strip()).strip()
+            err = f"{type(e).__name__}: {e}"
+            try:
+                lst = ytt.list(vid)
+                picked = None
+                try:
+                    picked = lst.find_transcript([lang])
+                except Exception:
+                    picked = None
+                if picked is None:
+                    try:
+                        picked = lst.find_transcript(["es", "en"])
+                    except Exception:
+                        picked = None
+                if picked is None:
+                    try:
+                        picked = next(iter(lst), None)
+                    except Exception:
+                        picked = None
+                if picked is not None:
+                    try:
+                        rows = picked.fetch()
+                        err = None
+                    except Exception as e2:
+                        err = f"{err} | fetch failed: {type(e2).__name__}: {e2}"
+            except Exception as e2:
+                err = f"{err} | list failed: {type(e2).__name__}: {e2}"
+
+        # youtube-transcript-api v1.x returns snippet objects (text/start/duration), not dicts.
+        def _seg_to_dict(seg: object) -> dict:
+            if isinstance(seg, dict):
+                return seg
+            return {
+                "text": getattr(seg, "text", ""),
+                "start": getattr(seg, "start", None),
+                "duration": getattr(seg, "duration", None),
+            }
+
+        segs = [_seg_to_dict(s) for s in (rows or [])]
+        text = "\n".join((str(r.get("text") or "")).strip() for r in segs if str(r.get("text") or "").strip()).strip()
         out_videos.append(
             {
                 "video_id": vid,
                 "title": v.get("title") or "",
                 "published_at": v.get("published_at"),
                 "transcript": text,
-                "segments": rows,
+                "segments": segs,
+                "status": "ok" if text else "missing",
+                "error": err,
             }
         )
 

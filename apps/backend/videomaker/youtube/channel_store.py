@@ -190,6 +190,48 @@ def list_channel_videos_detail(channel_id: str, *, limit: int = 50) -> list[dict
     )
 
 
+def list_channel_videos_detail_by_ids(channel_id: str, *, video_ids: list[str]) -> list[dict[str, Any]]:
+    """
+    Like list_channel_videos_detail, but filtered to an explicit set of video_ids.
+    Preserves DB-derived metrics for those rows.
+    """
+    ids = [v.strip() for v in (video_ids or []) if v and v.strip()]
+    if not ids:
+        return []
+    # hard cap to avoid huge IN lists
+    ids = ids[:200]
+    return db.fetch_all(
+        """
+        select
+          v.*,
+          -- Derived metrics:
+          greatest(1.0, extract(epoch from (now() - v.published_at)) / 86400.0) as age_days,
+          case
+            when v.published_at is null then null
+            else (coalesce(v.views,0)::float / greatest(1.0, extract(epoch from (now() - v.published_at)) / 86400.0))
+          end as views_per_day,
+          case
+            when v.published_at is null then null
+            else (coalesce(v.views,0)::float / greatest(1.0, extract(epoch from (now() - v.published_at)) / 3600.0))
+          end as vph,
+          case when coalesce(v.views,0) <= 0 then null else (coalesce(v.likes,0)::float / v.views::float) end as like_rate,
+          case when coalesce(v.views,0) <= 0 then null else (coalesce(v.comments,0)::float / v.views::float) end as comment_rate,
+          case when coalesce(v.views,0) <= 0 then null else ((coalesce(v.likes,0)+coalesce(v.comments,0))::float / v.views::float) end as engagement,
+          (select subscribers from channel_snapshots s where s.channel_id=v.channel_id order by fetched_at desc limit 1) as channel_subscribers,
+          case
+            when (select subscribers from channel_snapshots s where s.channel_id=v.channel_id order by fetched_at desc limit 1) is null
+              or (select subscribers from channel_snapshots s where s.channel_id=v.channel_id order by fetched_at desc limit 1) <= 0
+            then null
+            else ((coalesce(v.likes,0)+coalesce(v.comments,0))::float / (select subscribers from channel_snapshots s where s.channel_id=v.channel_id order by fetched_at desc limit 1)::float)
+          end as engagement_per_sub
+        from videos v
+        where v.channel_id = %(cid)s
+          and v.video_id = any(%(ids)s)
+        """,
+        {"cid": channel_id, "ids": ids},
+    )
+
+
 def upsert_videos(channel_id: str, videos: list[dict[str, Any]]) -> None:
     """
     Upsert de vídeos con stats. Espera dicts con claves:
