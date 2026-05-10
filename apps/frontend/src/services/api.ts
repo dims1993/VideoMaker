@@ -30,6 +30,16 @@ export async function putJson<T>(url: string, body: unknown): Promise<T> {
   return r.json() as Promise<T>;
 }
 
+export async function patchJson<T>(url: string, body: unknown): Promise<T> {
+  const r = await fetch(url, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error((await readApiError(r)) || r.statusText);
+  return r.json() as Promise<T>;
+}
+
 export async function deleteReq(url: string): Promise<void> {
   const r = await fetch(url, { method: "DELETE" });
   if (!r.ok) throw new Error((await readApiError(r)) || r.statusText);

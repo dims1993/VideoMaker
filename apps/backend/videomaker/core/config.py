@@ -21,7 +21,8 @@ KEYWORD_WINDOW_AUDIO_S = 10.0
 # - BACKEND_ROOT: apps/backend
 # - PROJECT_ROOT: raíz del repo (para output/, musica_libre/, voice_samples/, etc.)
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+# apps/backend/videomaker/core/config.py -> repo root está 4 niveles arriba
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 MUSIC_DIR = PROJECT_ROOT / "musica_libre"
 VOICE_SAMPLES_DIR = PROJECT_ROOT / "voice_samples"
 OUTPUT_DIR = PROJECT_ROOT / "output"

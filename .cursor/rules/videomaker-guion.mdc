@@ -1,15 +1,12 @@
 ---
-description: Guiones Videomaker — tres actos, ~1500 palabras, B-roll y TTS
-globs: videomaker/prompts.py,**/guion.txt
+description: Guiones Videomaker — plantillas en app, formato pipeline, TTS
+globs: videomaker/llm/script_pipeline_format.py,**/guion.txt
 alwaysApply: false
 ---
 
 # Guion Videomaker (referencia rápida)
 
-Al editar `videomaker/prompts.py` o ayudar con `guion.txt`, respeta lo definido en código:
-
-- **Tres actos:** introducción ~1:30, tres pilares ~6:00 (~2:00 cada uno), conclusión ~2:30.
-- **~1 500 palabras**, sin resumir; profundizar con anécdotas y metáforas.
-- **Cinco secciones** con `[CATEGORIA: …]` (Introducción, Pilar 1–3, Cierre).
-- **`[B-ROLL: descripción detallada]` cada dos frases**, en el punto exacto del cambio de imagen; no al final del bloque ni del guion; el TTS no las lee.
-- Pausas dramáticas en narración: separar párrafos con línea en blanco; el pipeline inserta ~2,5 s de silencio entre párrafos (`VIDEOMAKER_PARAGRAPH_PAUSE_SEC`).
+- **Narrativa y voz:** las define la plantilla del **Catálogo Prompt** (paso Prompt de la pipeline) y el overlay de **Script Writer**; editables en la app.
+- **Formato técnico común:** `videomaker/llm/script_pipeline_format.py` — OUTLINE + GUIÓN, `[CATEGORIA: …]`, `[B-ROLL: …]` (~cada dos frases narrables), línea final de keywords para stock; sin imponer «tres pilares» ocultos fuera de las plantillas.
+- **Sesión:** keywords, contexto y minutos vienen del blueprint (`build_session_user_prompt`).
+- Pausas entre párrafos TTS: `VIDEOMAKER_PARAGRAPH_PAUSE_SEC` en `.env` cuando aplique.

@@ -1,4 +1,3 @@
-import type React from "react";
 import type { Session } from "../../types";
 import { Btn, Input, Label, StatusBadge } from "../ui";
 

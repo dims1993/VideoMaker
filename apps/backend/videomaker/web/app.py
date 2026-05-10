@@ -165,6 +165,12 @@ async def upload_script(work: str = Form(...), file: UploadFile | None = None):
         return RedirectResponse(url=f"/?work={work}", status_code=303)
     data = await file.read()
     (work_dir / "guion.txt").write_bytes(data)
+    try:
+        from videomaker.core.script_bundle import write_script_bundle
+
+        write_script_bundle(work_dir, data.decode("utf-8"))
+    except UnicodeDecodeError:
+        pass
     return RedirectResponse(url=f"/?work={work}", status_code=303)
 
 

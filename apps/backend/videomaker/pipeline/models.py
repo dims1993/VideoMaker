@@ -33,6 +33,14 @@ class PipelineInputs:
     provider: str
     model: str
     voice_preset: str = "xtts_v2_es"
+    # UUID en prompt_templates; solo se persiste en prompt.json al ejecutar el paso prompt.
+    prompt_template_id: str | None = None
+    # UUID en script_writer_templates; se guarda en catalog al ejecutar Script Writer.
+    script_writer_template_id: str | None = None
+    # Tema / input del usuario (panel Prompt); se guarda en prompt.json.
+    prompt_topic: str = ""
+    # Índice 0..n-1 del fragmento a generar (modo fragmentación secuencial); None = auto (primer pendiente).
+    script_fragment_index: int | None = None
 
 
 PIPELINE_STEPS: list[tuple[str, str]] = [

@@ -22,6 +22,7 @@ from videomaker.youtube.youtube_analyze import (
     analyze_youtube,
     resolve_channel_id,
 )
+from videomaker.core.script_bundle import write_script_bundle
 from videomaker.pipeline.runner import run_pipeline
 from videomaker.pipeline.models import PipelineInputs
 from videomaker.youtube.channel_store import upsert_channel
@@ -84,6 +85,7 @@ def run_generate_script(
             user_extra=user_extra or "",
         )
         (work_dir / "guion.txt").write_text(text, encoding="utf-8")
+        write_script_bundle(work_dir, text)
         set_status(work_dir, state="done", step="script", detail="Guion listo.")
     except Exception as e:
         set_status(work_dir, state="error", step="script", detail=str(e))
@@ -432,9 +434,16 @@ def run_create_pipeline(
     provider: str,
     model: str,
     step_id: str | None = None,
+    prompt_template_id: str | None = None,
+    prompt_topic: str | None = None,
+    script_writer_template_id: str | None = None,
+    script_fragment_index: int | None = None,
 ) -> None:
     work_dir = safe_work_dir(work)
     work_dir.mkdir(parents=True, exist_ok=True)
+    tid = (prompt_template_id or "").strip() or None
+    sw_tid = (script_writer_template_id or "").strip() or None
+    pt = "" if prompt_topic is None else str(prompt_topic).strip()
     inputs = PipelineInputs(
         keywords=keywords,
         context=context,
@@ -442,5 +451,9 @@ def run_create_pipeline(
         minutes=float(minutes),
         provider=provider or "",
         model=model or "",
+        prompt_template_id=tid,
+        prompt_topic=pt,
+        script_writer_template_id=sw_tid,
+        script_fragment_index=script_fragment_index,
     )
     run_pipeline(work_dir, inputs, rerun_step_id=step_id)

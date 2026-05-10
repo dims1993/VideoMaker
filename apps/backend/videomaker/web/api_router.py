@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import os
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Literal
 
@@ -19,6 +23,21 @@ from videomaker.llm.prompt_presets_store import (
     set_selected_id,
     update_preset,
 )
+from videomaker.llm.prompt_templates_store import (
+    create_prompt_template,
+    delete_prompt_template,
+    get_prompt_template,
+    list_prompt_templates,
+    update_prompt_template,
+)
+from videomaker.llm.script_writer_templates_store import (
+    create_script_writer_template,
+    delete_script_writer_template,
+    get_script_writer_template,
+    list_script_writer_templates,
+    update_script_writer_template,
+)
+from videomaker.core.script_bundle import build_script_bundle, read_script_bundle, write_script_bundle
 from videomaker.llm.script_gen import compose_messages
 from videomaker.tts.voice_reference import REFERENCE_SUFFIXES, normalize_reference_for_xtts
 from videomaker.youtube.channel_store import (
@@ -122,10 +141,29 @@ class PipelineStartBody(WorkModel):
     minutes: float = 10.0
     provider: str = ""
     model: str = ""
+    prompt_template_id: str | None = None
+    prompt_topic: str | None = None
+    script_writer_template_id: str | None = None
+    script_fragment_index: int | None = None
 
 
 class PipelineRerunBody(WorkModel):
     step_id: str = Field(..., min_length=2)
+    prompt_template_id: str | None = None
+    prompt_topic: str | None = None
+    script_writer_template_id: str | None = None
+    keywords: str | None = None
+    context: str | None = None
+    lang: str | None = None
+    minutes: float | None = None
+    provider: str | None = None
+    model: str | None = None
+    script_fragment_index: int | None = None
+
+
+class ScriptFragmentationPatchBody(WorkModel):
+    index: int = Field(..., ge=0)
+    complete: bool = True
 
 
 class ScriptUpdateBody(WorkModel):
@@ -158,12 +196,68 @@ class PromptPresetSelectBody(BaseModel):
     id: str | None = None
 
 
+class PromptTemplateBody(BaseModel):
+    name: str = ""
+    hook_style: str = ""
+    visual_style: str = ""
+    tone: str = ""
+    system_instructions: str = ""
+    user_instructions: str = ""
+    params_json: dict = Field(default_factory=dict)
+
+
+class ScriptWriterTemplateBody(BaseModel):
+    name: str = ""
+    system_instructions: str = ""
+    user_instructions: str = ""
+    params_json: dict = Field(default_factory=dict)
+
+
 @router.get("/session")
 def api_session(work: str = "output/ui_session"):
     try:
         return build_session_state(work)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+def _ollama_tags_payload() -> dict:
+    """Lista modelos instalados vía GET {OLLAMA_BASE_URL}/api/tags."""
+    base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+    url = f"{base}/api/tags"
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode())
+        models_out: list[dict] = []
+        for m in data.get("models") or []:
+            name = m.get("name") or m.get("model")
+            if isinstance(name, str) and name.strip():
+                models_out.append(
+                    {
+                        "name": name.strip(),
+                        "size": m.get("size"),
+                        "modified_at": m.get("modified_at"),
+                    }
+                )
+        return {"ok": True, "models": models_out}
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as e:
+        return {"ok": False, "models": [], "error": str(e)}
+
+
+@router.get("/llm/defaults")
+def api_llm_defaults():
+    """Valores por defecto del servidor (.env) para inicializar la UI."""
+    return {
+        "llm_provider": os.environ.get("VIDEOMAKER_LLM_PROVIDER", ""),
+        "ollama_model": os.environ.get("OLLAMA_MODEL", ""),
+        "openai_model": os.environ.get("OPENAI_MODEL", ""),
+    }
+
+
+@router.get("/ollama/models")
+def api_ollama_models():
+    return _ollama_tags_payload()
 
 
 @router.get("/status")
@@ -181,9 +275,18 @@ def api_script(work: str = "output/ui_session"):
         work_dir = safe_work_dir(work)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    p = work_dir / "guion.txt"
-    text = p.read_text(encoding="utf-8") if p.is_file() else ""
-    return {"text": text, "has_script": p.is_file()}
+    guion = work_dir / "guion.txt"
+    pipe = work_dir / "pipeline" / "script.txt"
+    text = ""
+    if guion.is_file() and guion.stat().st_size > 0:
+        text = guion.read_text(encoding="utf-8")
+    elif pipe.is_file():
+        text = pipe.read_text(encoding="utf-8")
+    has_script = guion.is_file() or pipe.is_file()
+    structured = read_script_bundle(work_dir)
+    if structured is None and text.strip():
+        structured = build_script_bundle(text)
+    return {"text": text, "has_script": has_script, "structured": structured}
 
 
 @router.put("/script")
@@ -194,6 +297,10 @@ def api_put_script(body: ScriptUpdateBody):
         raise HTTPException(status_code=400, detail=str(e)) from e
     work_dir.mkdir(parents=True, exist_ok=True)
     (work_dir / "guion.txt").write_text(body.text, encoding="utf-8")
+    pipe = work_dir / "pipeline" / "script.txt"
+    pipe.parent.mkdir(parents=True, exist_ok=True)
+    pipe.write_text(body.text, encoding="utf-8")
+    write_script_bundle(work_dir, body.text)
     return {"ok": True}
 
 
@@ -743,24 +850,25 @@ def api_channel_transcripts_json(channel_id: str, body: ChannelTranscriptsJsonBo
                 err = f"{err} | list failed: {type(e2).__name__}: {e2}"
 
         # youtube-transcript-api v1.x returns snippet objects (text/start/duration), not dicts.
-        def _seg_to_dict(seg: object) -> dict:
+        def _seg_text(seg: object) -> str:
             if isinstance(seg, dict):
-                return seg
-            return {
-                "text": getattr(seg, "text", ""),
-                "start": getattr(seg, "start", None),
-                "duration": getattr(seg, "duration", None),
-            }
+                return str(seg.get("text") or "").strip()
+            return str(getattr(seg, "text", "") or "").strip()
 
-        segs = [_seg_to_dict(s) for s in (rows or [])]
-        text = "\n".join((str(r.get("text") or "")).strip() for r in segs if str(r.get("text") or "").strip()).strip()
+        lines = [_seg_text(s) for s in (rows or [])]
+        text = "\n".join(t for t in lines if t).strip()
+        dur = v.get("duration_s")
+        try:
+            duration_s = int(dur) if dur is not None else None
+        except (TypeError, ValueError):
+            duration_s = None
         out_videos.append(
             {
                 "video_id": vid,
                 "title": v.get("title") or "",
                 "published_at": v.get("published_at"),
+                "duration_s": duration_s,
                 "transcript": text,
-                "segments": segs,
                 "status": "ok" if text else "missing",
                 "error": err,
             }
@@ -783,6 +891,68 @@ def api_pipeline_state(work: str = "output/ui_session"):
     return read_pipeline_state(work_dir)
 
 
+@router.get("/pipeline/prompt-artifact")
+def api_pipeline_prompt_artifact(work: str = "output/ui_session"):
+    """Contenido de `pipeline/prompt.json` para rehidratar la UI tras recargar."""
+    try:
+        work_dir = safe_work_dir(work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    p = work_dir / "pipeline" / "prompt.json"
+    if not p.is_file():
+        return {"exists": False}
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return {"exists": False}
+        return {"exists": True, "artifact": raw}
+    except Exception:
+        return {"exists": False}
+
+
+@router.get("/script-fragmentation")
+def api_script_fragmentation_get(work: str = "output/ui_session"):
+    try:
+        work_dir = safe_work_dir(work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    from videomaker.llm.script_fragmentation import load_state
+
+    st = load_state(work_dir)
+    if not st:
+        return {"exists": False, "state": None}
+    return {"exists": True, "state": st}
+
+
+@router.patch("/script-fragmentation")
+def api_script_fragmentation_patch(body: ScriptFragmentationPatchBody):
+    try:
+        work_dir = safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    from videomaker.llm.script_fragmentation import apply_fragment_review
+
+    try:
+        st = apply_fragment_review(work_dir, body.index, complete=body.complete)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except (IndexError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, "state": st}
+
+
+@router.post("/script-fragmentation/reset")
+def api_script_fragmentation_reset(body: WorkModel):
+    try:
+        work_dir = safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    from videomaker.llm.script_fragmentation import reset_fragmentation_artifacts
+
+    reset_fragmentation_artifacts(work_dir)
+    return {"ok": True}
+
+
 @router.post("/pipeline/start", status_code=202)
 def api_pipeline_start(background: BackgroundTasks, body: PipelineStartBody):
     try:
@@ -799,8 +969,40 @@ def api_pipeline_start(background: BackgroundTasks, body: PipelineStartBody):
         provider=body.provider,
         model=body.model,
         step_id=None,
+        prompt_template_id=body.prompt_template_id,
+        prompt_topic=body.prompt_topic,
+        script_writer_template_id=body.script_writer_template_id,
+        script_fragment_index=body.script_fragment_index,
     )
     return {"started": True}
+
+
+class PipelineStopBody(WorkModel):
+    pass
+
+
+@router.post("/pipeline/stop", status_code=202)
+def api_pipeline_stop(body: PipelineStopBody):
+    try:
+        work_dir = safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    from videomaker.pipeline.runner import request_pipeline_stop
+
+    request_pipeline_stop(work_dir)
+    return {"ok": True}
+
+
+@router.post("/pipeline/reset", status_code=202)
+def api_pipeline_reset(body: PipelineStopBody):
+    try:
+        work_dir = safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    from videomaker.pipeline.runner import reset_pipeline
+
+    reset_pipeline(work_dir)
+    return {"ok": True}
 
 
 @router.post("/pipeline/step/rerun", status_code=202)
@@ -812,13 +1014,17 @@ def api_pipeline_step_rerun(background: BackgroundTasks, body: PipelineRerunBody
     background.add_task(
         jobs.run_create_pipeline,
         body.work,
-        keywords="",
-        context="",
-        lang="es",
-        minutes=10.0,
-        provider="",
-        model="",
+        keywords="" if body.keywords is None else body.keywords,
+        context="" if body.context is None else body.context,
+        lang="es" if body.lang is None else body.lang,
+        minutes=10.0 if body.minutes is None else float(body.minutes),
+        provider="" if body.provider is None else body.provider,
+        model="" if body.model is None else body.model,
         step_id=body.step_id,
+        prompt_template_id=body.prompt_template_id,
+        prompt_topic=body.prompt_topic,
+        script_writer_template_id=body.script_writer_template_id,
+        script_fragment_index=body.script_fragment_index,
     )
     return {"started": True}
 
@@ -840,6 +1046,9 @@ def api_pipeline_step_rerun_compat(background: BackgroundTasks, step_id: str, wo
         provider="",
         model="",
         step_id=step_id,
+        prompt_template_id=None,
+        prompt_topic=None,
+        script_writer_template_id=None,
     )
     return {"started": True}
 
@@ -889,6 +1098,130 @@ def api_prompt_preset_select(body: PromptPresetSelectBody):
     return {"ok": True, "selected_id": get_selected_id()}
 
 
+@router.get("/prompt-templates")
+def api_prompt_templates_list(limit: int = 200):
+    return {"templates": list_prompt_templates(limit=int(limit))}
+
+
+@router.get("/prompt-templates/{template_id}")
+def api_prompt_template_get(template_id: str):
+    t = get_prompt_template(template_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Template no encontrado.")
+    return t
+
+
+@router.post("/prompt-templates", status_code=201)
+def api_prompt_template_create(body: PromptTemplateBody):
+    try:
+        t = create_prompt_template(
+            name=body.name,
+            hook_style=body.hook_style,
+            visual_style=body.visual_style,
+            tone=body.tone,
+            system_instructions=body.system_instructions,
+            user_instructions=body.user_instructions,
+            params_json=body.params_json,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, "template": t}
+
+
+@router.put("/prompt-templates/{template_id}")
+def api_prompt_template_update(template_id: str, body: PromptTemplateBody):
+    try:
+        t = update_prompt_template(
+            template_id,
+            name=body.name,
+            hook_style=body.hook_style,
+            visual_style=body.visual_style,
+            tone=body.tone,
+            system_instructions=body.system_instructions,
+            user_instructions=body.user_instructions,
+            params_json=body.params_json,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not t:
+        raise HTTPException(status_code=404, detail="Template no encontrado.")
+    return {"ok": True, "template": t}
+
+
+@router.delete("/prompt-templates/{template_id}")
+def api_prompt_template_delete(template_id: str):
+    delete_prompt_template(template_id)
+    return {"ok": True}
+
+
+@router.get("/narrative-presets")
+def api_narrative_presets():
+    """Presets de pesos por categoría narrativa (4 actos)."""
+    from videomaker.llm.narrative_presets import NARRATIVE_PRESETS
+
+    presets: list[dict] = []
+    for p in NARRATIVE_PRESETS.values():
+        presets.append(
+            {
+                "id": p["id"],
+                "name": p["name"],
+                "weights": list(p["weights"]),
+                "descriptions": list(p["descriptions"]),
+            }
+        )
+    return {"presets": presets}
+
+
+@router.get("/script-writer-templates")
+def api_script_writer_templates_list(limit: int = 200):
+    return {"templates": list_script_writer_templates(limit=int(limit))}
+
+
+@router.get("/script-writer-templates/{template_id}")
+def api_script_writer_template_get(template_id: str):
+    t = get_script_writer_template(template_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Template no encontrado.")
+    return t
+
+
+@router.post("/script-writer-templates", status_code=201)
+def api_script_writer_template_create(body: ScriptWriterTemplateBody):
+    try:
+        t = create_script_writer_template(
+            name=body.name,
+            system_instructions=body.system_instructions,
+            user_instructions=body.user_instructions,
+            params_json=body.params_json,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, "template": t}
+
+
+@router.put("/script-writer-templates/{template_id}")
+def api_script_writer_template_update(template_id: str, body: ScriptWriterTemplateBody):
+    try:
+        t = update_script_writer_template(
+            template_id,
+            name=body.name,
+            system_instructions=body.system_instructions,
+            user_instructions=body.user_instructions,
+            params_json=body.params_json,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not t:
+        raise HTTPException(status_code=404, detail="Template no encontrado.")
+    return {"ok": True, "template": t}
+
+
+@router.delete("/script-writer-templates/{template_id}")
+def api_script_writer_template_delete(template_id: str):
+    delete_script_writer_template(template_id)
+    return {"ok": True}
+
+
 @router.post("/upload-script", status_code=201)
 async def api_upload_script(work: str = Form("output/ui_session"), file: UploadFile | None = None):
     try:
@@ -900,6 +1233,10 @@ async def api_upload_script(work: str = Form("output/ui_session"), file: UploadF
         raise HTTPException(status_code=400, detail="Falta el archivo.")
     data = await file.read()
     (work_dir / "guion.txt").write_bytes(data)
+    try:
+        write_script_bundle(work_dir, data.decode("utf-8"))
+    except UnicodeDecodeError:
+        pass
     return {"ok": True}
 
 

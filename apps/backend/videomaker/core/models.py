@@ -50,6 +50,8 @@ class ScriptBlueprint:
     extra_context: str
     locale: Locale
     target_minutes: float = 10.0
+    #: Si se define, el prompt maestro usa esta duración para el contexto del “vídeo completo” (p. ej. fragmentación).
+    prompt_duration_minutes: float | None = None
     categories: list[ScriptCategory] = field(default_factory=list)
 
 
