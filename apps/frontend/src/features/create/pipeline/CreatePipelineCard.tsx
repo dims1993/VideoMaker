@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import { Btn, Card, StatusBadge } from "../../../components/ui";
 import { postJson } from "../../../services/api";
 import type { PipelineState } from "../../../types/pipeline";
@@ -37,7 +44,7 @@ export type CreatePipelineCardProps = {
   provider: string;
   setProvider: (v: string) => void;
   model: string;
-  setModel: (v: string) => void;
+  setModel: Dispatch<SetStateAction<string>>;
   preset: string;
   setPreset: (v: string) => void;
   previewText: string;

@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import { Btn, Input, Label, Select, TextArea } from "../../../components/ui";
 import { patchJson, postJson, putJson } from "../../../services/api";
 import type {
@@ -66,7 +74,7 @@ export function ScriptWriterPanel({
   provider: string;
   setProvider: (v: string) => void;
   model: string;
-  setModel: (v: string) => void;
+  setModel: Dispatch<SetStateAction<string>>;
   scriptFragmentIndex: number | null;
   setScriptFragmentIndex: (v: number | null) => void;
   refreshPipeline: () => Promise<void>;
