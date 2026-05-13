@@ -7,7 +7,7 @@ import os
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -36,6 +36,25 @@ from videomaker.llm.script_writer_templates_store import (
     get_script_writer_template,
     list_script_writer_templates,
     update_script_writer_template,
+)
+from videomaker.core.hook_router_settings_store import (
+    read_hook_router_settings,
+    write_hook_router_settings,
+)
+from videomaker.core.image_prompt_writer_settings_store import (
+    read_image_prompt_writer_settings,
+    write_image_prompt_writer_settings,
+)
+from videomaker.core.metadata_settings_store import (
+    read_metadata_settings,
+    write_metadata_settings,
+)
+from videomaker.core.saved_guiones_store import (
+    delete_saved,
+    list_saved,
+    read_saved_text,
+    save_from_work_dir,
+    save_text_to_library,
 )
 from videomaker.core.script_bundle import build_script_bundle, read_script_bundle, write_script_bundle
 from videomaker.llm.script_gen import compose_messages
@@ -96,11 +115,6 @@ class SpeakScriptBody(WorkModel):
     max_segments: int = 0
 
 
-class StockFetchBody(WorkModel):
-    lang: str = "es"
-    max_clips: int = 25
-
-
 class RenderDraftBody(WorkModel):
     no_music: bool = False
 
@@ -145,6 +159,7 @@ class PipelineStartBody(WorkModel):
     prompt_topic: str | None = None
     script_writer_template_id: str | None = None
     script_fragment_index: int | None = None
+    render_no_music: bool = False
 
 
 class PipelineRerunBody(WorkModel):
@@ -159,6 +174,7 @@ class PipelineRerunBody(WorkModel):
     provider: str | None = None
     model: str | None = None
     script_fragment_index: int | None = None
+    render_no_music: bool | None = None
 
 
 class ScriptFragmentationPatchBody(WorkModel):
@@ -168,6 +184,22 @@ class ScriptFragmentationPatchBody(WorkModel):
 
 class ScriptUpdateBody(WorkModel):
     text: str = Field(default="", description="Contenido completo de guion.txt")
+
+
+class SavedGuionTitleFields(BaseModel):
+    title: str | None = Field(default=None, max_length=240)
+
+
+class SavedGuionSnapshotBody(WorkModel, SavedGuionTitleFields):
+    """Guarda en la biblioteca una copia del guion ya presente en la sesión (`work`)."""
+
+
+class SavedGuionRawLibraryBody(SavedGuionTitleFields):
+    text: str = Field(default="", description="Texto completo a archivar en la biblioteca")
+
+
+class SavedGuionApplyTextBody(WorkModel):
+    text: str = Field(default="", description="Texto a escribir en la sesión y marcar Script Writer listo")
 
 
 class TtsReferenceBody(WorkModel):
@@ -295,12 +327,98 @@ def api_put_script(body: ScriptUpdateBody):
         work_dir = safe_work_dir(body.work)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    work_dir.mkdir(parents=True, exist_ok=True)
-    (work_dir / "guion.txt").write_text(body.text, encoding="utf-8")
-    pipe = work_dir / "pipeline" / "script.txt"
-    pipe.parent.mkdir(parents=True, exist_ok=True)
-    pipe.write_text(body.text, encoding="utf-8")
-    write_script_bundle(work_dir, body.text)
+    from videomaker.pipeline.runner import apply_imported_guion_to_work
+
+    apply_imported_guion_to_work(work_dir, body.text, detail="Guion guardado desde el editor.")
+    return {"ok": True}
+
+
+@router.get("/saved-guiones")
+def api_saved_guiones_list(limit: int = 100):
+    return {"items": list_saved(limit=limit)}
+
+
+@router.post("/saved-guiones")
+def api_saved_guiones_snapshot(body: SavedGuionSnapshotBody):
+    try:
+        work_dir = safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    try:
+        entry = save_from_work_dir(work_dir, title=body.title)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, "entry": entry}
+
+
+@router.post("/saved-guiones/raw")
+def api_saved_guiones_save_raw(body: SavedGuionRawLibraryBody):
+    try:
+        entry = save_text_to_library(body.text, title=body.title)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, "entry": entry}
+
+
+@router.post("/saved-guiones/upload")
+async def api_saved_guiones_upload(
+    title: str = Form(""),
+    file: UploadFile | None = None,
+):
+    if file is None:
+        raise HTTPException(status_code=400, detail="Falta archivo (campo file).")
+    raw_bytes = await file.read()
+    if len(raw_bytes) > 4 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Archivo demasiado grande (máx. 4 MiB).")
+    try:
+        text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw_bytes.decode("latin-1", errors="replace")
+    try:
+        entry = save_text_to_library(text, title=title.strip() or None)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, "entry": entry}
+
+
+@router.post("/saved-guiones/apply-text")
+def api_saved_guiones_apply_text(body: SavedGuionApplyTextBody):
+    try:
+        work_dir = safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not (body.text or "").strip():
+        raise HTTPException(status_code=400, detail="El texto del guion está vacío.")
+    from videomaker.pipeline.runner import apply_imported_guion_to_work
+
+    apply_imported_guion_to_work(work_dir, body.text, detail="Guion aplicado (texto pegado o archivo).")
+    return {"ok": True}
+
+
+@router.post("/saved-guiones/{saved_id}/apply")
+def api_saved_guiones_apply(saved_id: str, body: WorkModel):
+    try:
+        work_dir = safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    try:
+        text = read_saved_text(saved_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="id inválido") from None
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Guion no encontrado en la biblioteca.") from None
+    from videomaker.pipeline.runner import apply_imported_guion_to_work
+
+    apply_imported_guion_to_work(work_dir, text, detail="Guion cargado desde biblioteca.")
+    return {"ok": True}
+
+
+@router.delete("/saved-guiones/{saved_id}")
+def api_saved_guiones_delete(saved_id: str):
+    try:
+        delete_saved(saved_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="id inválido") from None
     return {"ok": True}
 
 
@@ -353,31 +471,14 @@ def api_speak_script(background: BackgroundTasks, body: SpeakScriptBody):
     return {"started": True, "step": "tts"}
 
 
-@router.post("/stock-fetch", status_code=202)
-def api_stock_fetch(background: BackgroundTasks, body: StockFetchBody):
-    try:
-        work_dir = safe_work_dir(body.work)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    if not (work_dir / "guion.txt").is_file():
-        raise HTTPException(status_code=400, detail="No existe guion.txt.")
-    background.add_task(
-        jobs.run_stock_fetch,
-        body.work,
-        lang=body.lang,
-        max_clips=body.max_clips,
-    )
-    return {"started": True, "step": "stock"}
-
-
 @router.post("/render-draft", status_code=202)
 def api_render_draft(background: BackgroundTasks, body: RenderDraftBody):
     try:
         work_dir = safe_work_dir(body.work)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    if not (work_dir / "narracion.wav").is_file() or not (work_dir / "stock").is_dir():
-        raise HTTPException(status_code=400, detail="Falta narracion.wav o carpeta stock/.")
+    if not (work_dir / "narracion.wav").is_file():
+        raise HTTPException(status_code=400, detail="Falta narracion.wav.")
     background.add_task(jobs.run_render_draft, body.work, no_music=body.no_music)
     return {"started": True, "step": "render"}
 
@@ -891,6 +992,595 @@ def api_pipeline_state(work: str = "output/ui_session"):
     return read_pipeline_state(work_dir)
 
 
+class PipelineMetadataPutBody(WorkModel):
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PipelineImagePromptsPutBody(WorkModel):
+    bundle: dict[str, Any] = Field(default_factory=dict)
+
+
+class ImagePromptWriterSettingsPutBody(WorkModel):
+    target_generator: str = Field(
+        default="midjourney",
+        description="midjourney | flux | dall_e | sd | custom",
+    )
+    append_midjourney_suffix: bool = Field(default=True)
+    export_negative_separate: bool = Field(default=True)
+    notes: str = Field(default="", description="Notas internas para el equipo o futuro LLM")
+    use_avatar: bool = Field(default=False)
+    avatar_id: str = Field(default="", description="ID de avatar del store global (vacío = descripción manual)")
+    avatar_description: str = Field(default="", description="Descripción del avatar para los prompts IA")
+    avatar_secs_per_image: float = Field(default=6.0, description="Segundos de narración por imagen")
+    avatar_max_images: int = Field(default=80, description="Máximo de imágenes a generar")
+
+
+class MetadataSettingsPutBody(WorkModel):
+    target_platform: str = Field(default="youtube", description="youtube | tiktok | reels")
+    target_keywords: str = ""
+    system_prompt: str = Field(default="", description="Vacío = usar prompt por defecto del servidor al generar")
+
+
+class HookRouterSettingsPutBody(WorkModel):
+    mode: str = Field(default="template", description="template | llm")
+    finance_style: str = Field(default="auto", description="auto | deep_documentary | …")
+    system_prompt: str = Field(default="", description="Solo modo llm; vacío = predeterminado interno")
+
+
+@router.get("/pipeline/hook-router-settings")
+def api_hook_router_settings_get(work: str = "output/ui_session"):
+    try:
+        work_dir = safe_work_dir(work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    from videomaker.llm.hook_scene_router import narrative_preset_from_work
+
+    st = read_hook_router_settings(work_dir)
+    np = narrative_preset_from_work(work_dir)
+    mode = str(st.get("mode") or "template").strip().lower()
+    fs = str(st.get("finance_style") or "auto").strip().lower()
+    sp = str(st.get("system_prompt") or "")
+    recommended_defaults = (
+        {
+            "mode": "template",
+            "finance_style": "auto",
+            "hint": "Con categoría Finanzas en Script Writer suele ir bien plantilla + auto (clasificador por palabras).",
+        }
+        if (np or "").lower() == "finanzas"
+        else {
+            "mode": "llm",
+            "finance_style": "auto",
+            "hint": "Sin preset finanzas: puedes usar IA para clasificar o plantilla + keywords.",
+        }
+    )
+    return {
+        "narrative_preset": np,
+        "mode": mode,
+        "finance_style": fs,
+        "system_prompt": sp,
+        "recommended_defaults": recommended_defaults,
+    }
+
+
+@router.put("/pipeline/hook-router-settings")
+def api_hook_router_settings_put(body: HookRouterSettingsPutBody):
+    try:
+        work_dir = safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    saved = write_hook_router_settings(
+        work_dir,
+        mode=body.mode,
+        finance_style=body.finance_style,
+        system_prompt=body.system_prompt,
+    )
+    return {"ok": True, "settings": saved}
+
+
+@router.get("/pipeline/hook-router-artifact")
+def api_hook_router_artifact(work: str = "output/ui_session"):
+    try:
+        work_dir = safe_work_dir(work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    p = work_dir / "pipeline" / "hook_scene_router.json"
+    if not p.is_file():
+        return {"exists": False, "artifact": None}
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return {"exists": False, "artifact": None}
+        return {"exists": True, "artifact": raw}
+    except Exception:
+        return {"exists": False, "artifact": None}
+
+
+class HookRouterArtifactPutBody(BaseModel):
+    work: str = "output/ui_session"
+    artifact: dict
+
+
+@router.put("/pipeline/hook-router-artifact")
+def api_hook_router_artifact_put(body: HookRouterArtifactPutBody):
+    """Persistir `pipeline/hook_scene_router.json` desde la UI y marcar el paso como listo."""
+    try:
+        work_dir = safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    from videomaker.pipeline.runner import save_manual_hook_router_bundle
+    try:
+        save_manual_hook_router_bundle(work_dir, body.artifact)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True}
+
+
+@router.get("/pipeline/body-router-artifact")
+def api_body_router_artifact_get(work: str = "output/ui_session"):
+    try:
+        work_dir = safe_work_dir(work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    p = work_dir / "pipeline" / "body_scene_router.json"
+    if not p.is_file():
+        return {"exists": False, "artifact": None}
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return {"exists": False, "artifact": None}
+        return {"exists": True, "artifact": raw}
+    except Exception:
+        return {"exists": False, "artifact": None}
+
+
+class BodyRouterArtifactPutBody(BaseModel):
+    work: str = "output/ui_session"
+    artifact: dict
+
+
+@router.put("/pipeline/body-router-artifact")
+def api_body_router_artifact_put(body: BodyRouterArtifactPutBody):
+    """Persistir `pipeline/body_scene_router.json` desde la UI y marcar el paso como listo."""
+    try:
+        work_dir = safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    from videomaker.pipeline.runner import save_manual_body_router_bundle
+    try:
+        save_manual_body_router_bundle(work_dir, body.artifact)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True}
+
+
+@router.post("/pipeline/hook-router/push-to-image-prompts")
+def api_hook_router_push_to_image_prompts(body: WorkModel):
+    try:
+        work_dir = safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    from videomaker.llm.hook_scene_router import merge_hook_router_into_image_prompts
+
+    try:
+        info = merge_hook_router_into_image_prompts(work_dir)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, **info}
+
+
+@router.get("/pipeline/metadata-settings")
+def api_pipeline_metadata_settings_get(
+    work: str = "output/ui_session",
+    lang: str = "es",
+    preview_platform: str | None = None,
+):
+    try:
+        work_dir = safe_work_dir(work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    from videomaker.llm.metadata_gen import default_system_prompt
+
+    st = read_metadata_settings(work_dir)
+    tp = str(st.get("target_platform") or "youtube").strip().lower()
+    if tp not in ("youtube", "tiktok", "reels"):
+        tp = "youtube"
+    pv = (preview_platform or "").strip().lower()
+    default_for = pv if pv in ("youtube", "tiktok", "reels") else tp
+    return {
+        "target_platform": tp,
+        "target_keywords": str(st.get("target_keywords") or ""),
+        "system_prompt": str(st.get("system_prompt") or ""),
+        "default_system_prompt": default_system_prompt(lang, default_for),
+    }
+
+
+@router.put("/pipeline/metadata-settings")
+def api_pipeline_metadata_settings_put(body: MetadataSettingsPutBody):
+    try:
+        work_dir = safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    tp = (body.target_platform or "youtube").strip().lower()
+    if tp not in ("youtube", "tiktok", "reels"):
+        raise HTTPException(status_code=400, detail="target_platform debe ser youtube, tiktok o reels")
+    saved = write_metadata_settings(
+        work_dir,
+        target_platform=tp,
+        target_keywords=body.target_keywords,
+        system_prompt=body.system_prompt,
+    )
+    return {"ok": True, "settings": saved}
+
+
+@router.post("/pipeline/metadata/push-thumbnails-to-images")
+def api_pipeline_metadata_push_thumbnails(body: WorkModel):
+    try:
+        work_dir = safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    from videomaker.pipeline.runner import push_thumbnail_ideas_to_image_prompts
+
+    try:
+        info = push_thumbnail_ideas_to_image_prompts(work_dir)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, **info}
+
+
+@router.get("/pipeline/metadata")
+def api_pipeline_metadata_get(work: str = "output/ui_session"):
+    try:
+        work_dir = safe_work_dir(work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    p = work_dir / "pipeline" / "metadata.json"
+    if not p.is_file():
+        return {"exists": False, "metadata": None}
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return {"exists": False, "metadata": None}
+        return {"exists": True, "metadata": raw}
+    except Exception:
+        return {"exists": False, "metadata": None}
+
+
+@router.put("/pipeline/metadata")
+def api_pipeline_metadata_put(body: PipelineMetadataPutBody):
+    try:
+        work_dir = safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    from videomaker.pipeline.runner import save_manual_metadata_bundle
+
+    try:
+        save_manual_metadata_bundle(work_dir, body.metadata)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True}
+
+
+@router.get("/pipeline/image-prompts")
+def api_pipeline_image_prompts_get(work: str = "output/ui_session"):
+    try:
+        work_dir = safe_work_dir(work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    p = work_dir / "pipeline" / "image_prompts.json"
+    if not p.is_file():
+        return {"exists": False, "bundle": None}
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return {"exists": False, "bundle": None}
+        return {"exists": True, "bundle": raw}
+    except Exception:
+        return {"exists": False, "bundle": None}
+
+
+@router.put("/pipeline/image-prompts")
+def api_pipeline_image_prompts_put(body: PipelineImagePromptsPutBody):
+    try:
+        work_dir = safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    from videomaker.pipeline.runner import save_manual_image_prompts_bundle
+
+    try:
+        save_manual_image_prompts_bundle(work_dir, body.bundle)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True}
+
+
+@router.get("/pipeline/image-prompt-writer-settings")
+def api_image_prompt_writer_settings_get(work: str = "output/ui_session"):
+    try:
+        work_dir = safe_work_dir(work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    st = read_image_prompt_writer_settings(work_dir)
+    from videomaker.llm.avatar_prompt_writer import AVATAR_DEFAULT_DESCRIPTION
+
+    return {
+        "target_generator": str(st.get("target_generator") or "midjourney"),
+        "append_midjourney_suffix": bool(st.get("append_midjourney_suffix", True)),
+        "export_negative_separate": bool(st.get("export_negative_separate", True)),
+        "notes": str(st.get("notes") or ""),
+        "use_avatar": bool(st.get("use_avatar", False)),
+        "avatar_id": str(st.get("avatar_id") or ""),
+        "avatar_description": str(st.get("avatar_description") or AVATAR_DEFAULT_DESCRIPTION),
+        "avatar_secs_per_image": float(st.get("avatar_secs_per_image", 6.0)),
+        "avatar_max_images": int(st.get("avatar_max_images", 80)),
+    }
+
+
+@router.put("/pipeline/image-prompt-writer-settings")
+def api_image_prompt_writer_settings_put(body: ImagePromptWriterSettingsPutBody):
+    try:
+        work_dir = safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    # Si hay avatar_id, resolver la descripción desde el store
+    resolved_desc = body.avatar_description
+    if body.avatar_id:
+        from videomaker.core.avatars_store import get_avatar
+        av = get_avatar(body.avatar_id)
+        if av:
+            resolved_desc = av["description"]
+    saved = write_image_prompt_writer_settings(
+        work_dir,
+        target_generator=body.target_generator,
+        append_midjourney_suffix=body.append_midjourney_suffix,
+        export_negative_separate=body.export_negative_separate,
+        notes=body.notes,
+        use_avatar=body.use_avatar,
+        avatar_id=body.avatar_id,
+        avatar_description=resolved_desc,
+        avatar_secs_per_image=body.avatar_secs_per_image,
+        avatar_max_images=body.avatar_max_images,
+    )
+    return {"ok": True, "settings": saved}
+
+
+class AvatarPromptsGenerateBody(WorkModel):
+    provider: str = Field(default="", description="Vacío = leer VIDEOMAKER_LLM_PROVIDER")
+    model: str = Field(default="", description="Vacío = leer OPENAI_MODEL / OLLAMA_MODEL")
+
+
+@router.post("/pipeline/avatar-prompts/generate")
+def api_avatar_prompts_generate(body: AvatarPromptsGenerateBody, background_tasks: BackgroundTasks):
+    """Genera image_prompts.json con prompts del avatar basados en el guion y en los ajustes guardados."""
+    try:
+        work_dir = safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    st = read_image_prompt_writer_settings(work_dir)
+    from videomaker.llm.avatar_prompt_writer import (
+        AVATAR_DEFAULT_DESCRIPTION,
+        generate_avatar_image_prompts,
+    )
+
+    # Prioridad: avatar_id del store > descripción manual guardada > default
+    avatar_desc = str(st.get("avatar_description") or AVATAR_DEFAULT_DESCRIPTION).strip()
+    saved_avatar_id = str(st.get("avatar_id") or "").strip()
+    intro_enabled = False
+    intro_character_name = "Nerd"
+    outro_enabled = False
+    outro_character_name = "Nerd"
+    if saved_avatar_id:
+        from videomaker.core.avatars_store import get_avatar
+        av = get_avatar(saved_avatar_id)
+        if av:
+            avatar_desc = av["description"]
+            intro_enabled = bool(av.get("intro_enabled", False))
+            intro_character_name = str(av.get("intro_character_name") or av.get("name") or "Nerd")
+            outro_enabled = bool(av.get("outro_enabled", False))
+            outro_character_name = str(av.get("outro_character_name") or av.get("name") or "Nerd")
+    secs = float(st.get("avatar_secs_per_image") or 6.0)
+    max_imgs = int(st.get("avatar_max_images") or 80)
+    target_gen = str(st.get("target_generator") or "midjourney")
+    provider = body.provider.strip() or None
+    model = body.model.strip() or None
+
+    from videomaker.pipeline.runner import _set_step  # type: ignore[attr-defined]
+
+    def _run() -> None:
+        try:
+            _set_step(work_dir, "image_prompt_writer", state="running", detail="Generando prompts de avatar…")
+            result = generate_avatar_image_prompts(
+                work_dir,
+                avatar_description=avatar_desc,
+                intro_enabled=intro_enabled,
+                intro_character_name=intro_character_name,
+                outro_enabled=outro_enabled,
+                outro_character_name=outro_character_name,
+                secs_per_image=secs,
+                max_images=max_imgs,
+                target_generator=target_gen,
+                provider=provider,
+                model=model,
+            )
+            _set_step(
+                work_dir,
+                "image_prompt_writer",
+                state="done",
+                detail=f"Avatar prompts generados: {result['prompt_count']} imágenes.",
+            )
+        except Exception as exc:
+            _set_step(
+                work_dir,
+                "image_prompt_writer",
+                state="error",
+                detail=f"Error generando prompts de avatar: {exc}",
+            )
+
+    background_tasks.add_task(_run)
+    return {"ok": True, "queued": True, "avatar_description": avatar_desc, "secs_per_image": secs, "max_images": max_imgs}
+
+
+# ---------------------------------------------------------------------------
+# Avatares globales  (/api/avatars)
+# ---------------------------------------------------------------------------
+
+class AvatarCreateBody(BaseModel):
+    name: str
+    description: str
+    expressions: list[str] = Field(default_factory=list)
+    style_notes: str = ""
+    intro_enabled: bool = True
+    intro_character_name: str = ""
+    outro_enabled: bool = True
+    outro_character_name: str = ""
+
+
+class AvatarUpdateBody(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    expressions: list[str] | None = None
+    style_notes: str | None = None
+    intro_enabled: bool | None = None
+    intro_character_name: str | None = None
+    outro_enabled: bool | None = None
+    outro_character_name: str | None = None
+
+
+@router.get("/avatars")
+def api_avatars_list():
+    """Lista todos los avatares guardados (resumen)."""
+    from videomaker.core.avatars_store import list_avatars
+    return {"avatars": list_avatars()}
+
+
+@router.get("/avatars/{avatar_id}")
+def api_avatar_get(avatar_id: str):
+    """Devuelve un avatar completo por ID."""
+    from videomaker.core.avatars_store import get_avatar
+    av = get_avatar(avatar_id)
+    if av is None:
+        raise HTTPException(status_code=404, detail="Avatar no encontrado.")
+    return av
+
+
+@router.post("/avatars")
+def api_avatar_create(body: AvatarCreateBody):
+    """Crea un nuevo avatar."""
+    from videomaker.core.avatars_store import create_avatar
+    av = create_avatar(
+        body.name,
+        body.description,
+        expressions=body.expressions or None,
+        style_notes=body.style_notes,
+        intro_enabled=body.intro_enabled,
+        intro_character_name=body.intro_character_name,
+        outro_enabled=body.outro_enabled,
+        outro_character_name=body.outro_character_name,
+    )
+    return av
+
+
+@router.put("/avatars/{avatar_id}")
+def api_avatar_update(avatar_id: str, body: AvatarUpdateBody):
+    """Actualiza nombre, descripción, expresiones o notas de estilo de un avatar."""
+    from videomaker.core.avatars_store import update_avatar
+    av = update_avatar(
+        avatar_id,
+        name=body.name,
+        description=body.description,
+        expressions=body.expressions,
+        style_notes=body.style_notes,
+        intro_enabled=body.intro_enabled,
+        intro_character_name=body.intro_character_name,
+        outro_enabled=body.outro_enabled,
+        outro_character_name=body.outro_character_name,
+    )
+    if av is None:
+        raise HTTPException(status_code=404, detail="Avatar no encontrado.")
+    return av
+
+
+@router.delete("/avatars/{avatar_id}")
+def api_avatar_delete(avatar_id: str):
+    """Elimina un avatar (no se puede borrar el bundled)."""
+    from videomaker.core.avatars_store import delete_avatar
+    ok = delete_avatar(avatar_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="No se puede eliminar este avatar (bundled o no encontrado).")
+    return {"ok": True}
+
+
+@router.get("/pipeline/images-generation")
+def api_pipeline_images_generation_get(work: str = "output/ui_session"):
+    """Devuelve el manifest images_generation.json."""
+    try:
+        work_dir = safe_work_dir(work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    p = work_dir / "pipeline" / "images_generation.json"
+    if not p.is_file():
+        return {"exists": False, "manifest": None}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {"exists": False, "manifest": None}
+    return {"exists": True, "manifest": data}
+
+
+class ImagesGenerationPutBody(BaseModel):
+    work: str = "output/ui_session"
+    manifest: dict[str, Any]
+
+
+@router.put("/pipeline/images-generation")
+def api_pipeline_images_generation_put(body: ImagesGenerationPutBody):
+    """Persiste el manifest y marca el paso images_generation como done."""
+    try:
+        work_dir = safe_work_dir(body.work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    from videomaker.pipeline.runner import save_manual_images_generation_bundle
+
+    try:
+        save_manual_images_generation_bundle(work_dir, body.manifest)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True}
+
+
+@router.get("/pipeline/images-generation/image")
+def api_pipeline_image_file(work: str = "output/ui_session", filename: str = ""):
+    """Sirve un fichero PNG/JPG de pipeline/images/ como FileResponse."""
+    try:
+        work_dir = safe_work_dir(work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    safe_name = Path(filename).name
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="filename requerido")
+    img_path = (work_dir / "pipeline" / "images" / safe_name).resolve()
+    if not img_path.is_file():
+        raise HTTPException(status_code=404, detail=f"Imagen no encontrada: {safe_name}")
+    return FileResponse(str(img_path))
+
+
+@router.get("/pipeline/render-draft")
+def api_pipeline_render_draft_get(work: str = "output/ui_session"):
+    """Resumen del último montaje (`pipeline/render_draft.json`)."""
+    try:
+        work_dir = safe_work_dir(work)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    p = work_dir / "pipeline" / "render_draft.json"
+    if not p.is_file():
+        return {"exists": False, "artifact": None}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {"exists": False, "artifact": None}
+    return {"exists": True, "artifact": data if isinstance(data, dict) else None}
+
+
 @router.get("/pipeline/prompt-artifact")
 def api_pipeline_prompt_artifact(work: str = "output/ui_session"):
     """Contenido de `pipeline/prompt.json` para rehidratar la UI tras recargar."""
@@ -973,6 +1663,7 @@ def api_pipeline_start(background: BackgroundTasks, body: PipelineStartBody):
         prompt_topic=body.prompt_topic,
         script_writer_template_id=body.script_writer_template_id,
         script_fragment_index=body.script_fragment_index,
+        render_no_music=body.render_no_music,
     )
     return {"started": True}
 
@@ -1025,6 +1716,7 @@ def api_pipeline_step_rerun(background: BackgroundTasks, body: PipelineRerunBody
         prompt_topic=body.prompt_topic,
         script_writer_template_id=body.script_writer_template_id,
         script_fragment_index=body.script_fragment_index,
+        render_no_music=body.render_no_music,
     )
     return {"started": True}
 
@@ -1049,6 +1741,8 @@ def api_pipeline_step_rerun_compat(background: BackgroundTasks, step_id: str, wo
         prompt_template_id=None,
         prompt_topic=None,
         script_writer_template_id=None,
+        script_fragment_index=None,
+        render_no_music=None,
     )
     return {"started": True}
 
@@ -1152,6 +1846,151 @@ def api_prompt_template_update(template_id: str, body: PromptTemplateBody):
 def api_prompt_template_delete(template_id: str):
     delete_prompt_template(template_id)
     return {"ok": True}
+
+
+# ── Generador de template a partir de transcripciones ─────────────────────
+
+class PromptTemplateFromTranscriptBody(BaseModel):
+    transcript_text: str = Field(..., min_length=50)
+    provider: str = "anthropic"
+    model: str = ""
+
+
+_TRANSCRIPT_SYSTEM = """
+You are a YouTube channel strategy analyst and AI prompt engineer.
+
+Your task: analyze a set of video transcripts from a single YouTube channel and produce a
+structured JSON that captures the channel's identity and can be used as a Videomaker prompt template.
+
+Return ONLY a valid JSON object (no markdown, no extra text) with this exact schema:
+{
+  "name": "<short template name, e.g. 'Nick Invests – Finanzas personales'>",
+  "hook_style": "<how hooks open: question / data / story / shock / etc.>",
+  "visual_style": "<visual tone: talking head + b-roll / whiteboard / motion graphics / etc.>",
+  "tone": "<overall tone: educational / entertaining / conversational / energetic / etc.>",
+  "system_instructions": "<3-6 sentences describing the channel's persona, narrative rules, and what the LLM must always do>",
+  "user_instructions": "<3-6 sentences with specific content rules: topics, forbidden subjects, CTA style, pacing, opening/closing phrases>",
+  "params_json": {
+    "target_audience": "<describe the viewer: age, interests, pain points>",
+    "language_context": {
+      "code": "<BCP-47 code, e.g. es-ES>",
+      "slang_level": "<low | medium | high>"
+    },
+    "narrative_structure": {
+      "tone": "<pacing and narrative tone>",
+      "hook_type": "<data-driven | question | story | shock | etc.>",
+      "cta_type": "<subscribe | comment | like | share | none>"
+    },
+    "visual_identity": {
+      "style": "<visual identity descriptor>",
+      "aspect_ratio": "<16:9 | 9:16 | 1:1>"
+    },
+    "key_points": ["<recurring theme 1>", "<recurring theme 2>", "..."]
+  }
+}
+""".strip()
+
+
+@router.post("/prompt-templates/generate-from-transcript")
+def api_prompt_template_generate_from_transcript(body: PromptTemplateFromTranscriptBody):
+    """Analyzes transcript text with an LLM and returns a filled prompt template JSON."""
+    from videomaker.llm.avatar_prompt_writer import _call_llm
+
+    user_msg = (
+        "Here are the video transcripts to analyze:\n\n"
+        + body.transcript_text[:40_000]
+        + "\n\nNow produce the JSON template as instructed."
+    )
+
+    raw = _call_llm(
+        system=_TRANSCRIPT_SYSTEM,
+        user=user_msg,
+        provider=body.provider,
+        model=body.model,
+        temperature=0.4,
+    )
+
+    # Strip markdown fences if present
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-z]*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```$", "", cleaned)
+
+    try:
+        result = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail=f"LLM did not return valid JSON: {exc}") from exc
+
+    return result
+
+
+# ── Generador de template Script Writer a partir de transcripciones ────────
+
+class ScriptWriterTemplateFromTranscriptBody(BaseModel):
+    transcript_text: str = Field(..., min_length=50)
+    provider: str = "anthropic"
+    model: str = ""
+
+
+_SW_TRANSCRIPT_SYSTEM = """
+You are a YouTube channel strategy analyst and script-writing expert.
+
+Your task: analyze a set of video transcripts from a single YouTube channel and produce a
+structured JSON that captures the channel's scripting style for a Videomaker Script Writer template.
+
+Return ONLY a valid JSON object (no markdown, no extra text) with this exact schema:
+{
+  "name": "<short template name, e.g. 'Nick Invests – Long-form finanzas'>",
+  "system_instructions": "<3-6 sentences describing the LLM's role when writing scripts for this channel: narrative persona, voice, structural rules, what to always do>",
+  "user_instructions": "<3-6 sentences with content-specific rules: recurring topics, forbidden subjects, how to open/close, pacing notes, CTA style>",
+  "params_json": {
+    "pacing": "<short | mixed | long>",
+    "data_density": "<low | medium | high>",
+    "structure_preset": "<four_act | default_five_blocks>",
+    "narrative_preset": "<finanzas | entretenimiento | tutorial | ventas | (omit if unsure)>",
+    "chunking": "<full_pass | sequential_fragments>"
+  }
+}
+
+Guidelines:
+- pacing: "short" for fast-cut punchy videos, "long" for documentary/essay style, "mixed" otherwise.
+- data_density: "high" if the channel uses lots of numbers/statistics, "low" for storytelling/metaphor, "medium" otherwise.
+- structure_preset: "four_act" (hook→promise→body→close) for finance/business; "default_five_blocks" for tutorial/entertainment.
+- narrative_preset: choose the closest match from the list; omit the key if none fits.
+- chunking: "sequential_fragments" for long-form content (>15 min), "full_pass" otherwise.
+""".strip()
+
+
+@router.post("/script-writer-templates/generate-from-transcript")
+def api_sw_template_generate_from_transcript(body: ScriptWriterTemplateFromTranscriptBody):
+    """Analyzes transcript text with an LLM and returns a filled Script Writer template JSON."""
+    from videomaker.llm.avatar_prompt_writer import _call_llm
+
+    user_msg = (
+        "Here are the video transcripts to analyze:\n\n"
+        + body.transcript_text[:40_000]
+        + "\n\nNow produce the Script Writer JSON template as instructed."
+    )
+
+    raw = _call_llm(
+        system=_SW_TRANSCRIPT_SYSTEM,
+        user=user_msg,
+        provider=body.provider,
+        model=body.model,
+        temperature=0.4,
+    )
+
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-z]*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```$", "", cleaned)
+
+    try:
+        result = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail=f"LLM did not return valid JSON: {exc}") from exc
+
+    return result
 
 
 @router.get("/narrative-presets")

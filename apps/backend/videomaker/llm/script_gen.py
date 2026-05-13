@@ -96,7 +96,7 @@ def _stage_plan_from_extras(target_minutes: float, *, system_extra: str, user_ex
     return _StagePlan(blocks=blocks, target_words=_target_words_for_minutes(target_minutes, per_fragment=False))
 
 
-def _extract_stock_keywords(full_text: str) -> str:
+def _extract_reference_keyword_line(full_text: str) -> str:
     """
     Intenta extraer la última línea de keywords separadas por coma.
     Si no existe, devuelve vacío.
@@ -257,11 +257,11 @@ def _generate_script_staged(
     guion = "\n\n".join(blocks_text).strip()
 
     # Keywords finales: si el modelo no las dio, pedimos una línea barata.
-    kw = _extract_stock_keywords(guion)
+    kw = _extract_reference_keyword_line(guion)
     if not kw:
         kw = call_llm(
-            "Devuelve SOLO una línea con 8–12 keywords en inglés, separadas por comas, para buscar B-roll en Pexels.\n"
-            "No añadas nada más."
+            "Devuelve SOLO una línea con 8–12 keywords en inglés, separadas por comas, como referencia visual "
+            "(moodboard / equipo de imagen / IA). No añadas nada más."
         ).strip()
         kw = kw.splitlines()[-1].strip() if kw else ""
 
@@ -309,7 +309,7 @@ def _strip_non_narrable_for_metrics(text: str) -> str:
 
     Quita:
     - Sección OUTLINE (si existe).
-    - Bloque final de keywords/stock tags.
+    - Bloque final de keywords / referencia visual.
     - Líneas de [CATEGORIA: …] y etiquetas [B-ROLL: …].
     """
     t = text or ""
@@ -323,9 +323,9 @@ def _strip_non_narrable_for_metrics(text: str) -> str:
         if m2:
             t = t[m2.end() :]
 
-    # Corta keywords para stock al final (no narrable).
+    # Corta línea final de keywords / referencia visual (no narrable).
     cut = re.search(
-        r"(?im)^\s*(KEYWORDS\s+PARA\s+STOCK|TAGS?\s+PARA\s+STOCK|KEYWORDS?\s*(PEXELS)?|B[- ]?ROLL\s+TAGS?)\b.*$",
+        r"(?im)^\s*(KEYWORDS\s+PARA\s+STOCK|REFERENCIA\s+VISUAL|TAGS?\s+PARA\s+STOCK|B[- ]?ROLL\s+TAGS?)\b.*$",
         t,
     )
     if cut:
@@ -385,7 +385,7 @@ def compose_messages(
     Ensambla system/user para el LLM.
 
     - La **base narrativa** son las plantillas del Catálogo Prompt (+ overlay Script Writer), pasadas como `system_extra` / `user_extra`.
-    - Este archivo solo añade datos de sesión y el bloque técnico `technical_pipeline_format_addon` (etiquetas TTS/B-roll/stock),
+    - Este archivo solo añade datos de sesión y el bloque técnico `technical_pipeline_format_addon` (etiquetas TTS/B-roll),
       visible también cuando no hay plantilla (para que no exista un «prompt oculto» fuera de la app).
     """
     dm = (
@@ -398,7 +398,7 @@ def compose_messages(
     if se:
         system = (
             se
-            + "\n\n--- Formato de salida Videomaker (pipeline / TTS / stock) ---\n"
+            + "\n\n--- Formato de salida Videomaker (pipeline / TTS / B-roll) ---\n"
             + fmt
         )
     else:

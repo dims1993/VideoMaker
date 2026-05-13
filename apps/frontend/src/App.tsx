@@ -203,6 +203,7 @@ export default function App() {
               setMaxChars={setMaxChars}
               maxSeg={maxSeg}
               setMaxSeg={setMaxSeg}
+              refreshSession={refresh}
             />
           ) : null}
 
@@ -690,9 +691,9 @@ export default function App() {
             {(session?.narration_versions?.length ?? 0) > 0 ? (
               <div className="space-y-3 border-t border-slate-100 pt-4">
                 <div>
-                  <Label>Versión para stock y render</Label>
+                  <Label>Versión para render</Label>
                   <p className="mt-1 text-[11px] leading-snug text-slate-500">
-                    El render y la descarga de stock usan siempre <code className="rounded bg-slate-100 px-1">narracion.wav</code>; aquí eliges qué generación se copia ahí.
+                    El render usa siempre <code className="rounded bg-slate-100 px-1">narracion.wav</code>; aquí eliges qué generación se copia ahí.
                   </p>
                   <Select
                     className="mt-2"

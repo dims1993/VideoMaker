@@ -242,29 +242,11 @@ def speak_script(
     return RedirectResponse(url=f"/?work={work}", status_code=303)
 
 
-@app.post("/stock-fetch")
-def stock_fetch(
-    background: BackgroundTasks,
-    work: str = Form("output/ui_session"),
-    lang: str = Form("es"),
-    max_clips: int = Form(25),
-):
-    work_dir = safe_work_dir(work)
-    if not (work_dir / "guion.txt").is_file():
-        return RedirectResponse(url=f"/?work={work}", status_code=303)
-    background.add_task(
-        jobs.run_stock_fetch,
-        work,
-        lang=lang,
-        max_clips=int(max_clips),
-    )
-    return RedirectResponse(url=f"/?work={work}", status_code=303)
-
-
 @app.post("/render-draft")
 def render_draft(background: BackgroundTasks, work: str = Form("output/ui_session"), no_music: bool = Form(False)):
     work_dir = safe_work_dir(work)
-    if not (work_dir / "narracion.wav").is_file() or not (work_dir / "stock").is_dir():
+
+    if not (work_dir / "narracion.wav").is_file():
         return RedirectResponse(url=f"/?work={work}", status_code=303)
     background.add_task(jobs.run_render_draft, work, no_music=bool(no_music))
     return RedirectResponse(url=f"/?work={work}", status_code=303)

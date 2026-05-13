@@ -41,6 +41,8 @@ class PipelineInputs:
     prompt_topic: str = ""
     # Índice 0..n-1 del fragmento a generar (modo fragmentación secuencial); None = auto (primer pendiente).
     script_fragment_index: int | None = None
+    # Render draft (después de voiceovers).
+    render_no_music: bool = False
 
 
 PIPELINE_STEPS: list[tuple[str, str]] = [
@@ -52,5 +54,6 @@ PIPELINE_STEPS: list[tuple[str, str]] = [
     ("image_prompt_writer", "Image Prompt Writer"),
     ("images_generation", "Images Generation"),
     ("voiceovers_generation", "Voiceovers Generation"),
+    ("render_draft", "Render draft"),
 ]
 

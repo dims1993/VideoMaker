@@ -1,7 +1,7 @@
 import type React from "react";
 
 export function Label({ children }: { children: React.ReactNode }) {
-  return <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">{children}</label>;
+  return <label className="block text-xs font-medium text-slate-500">{children}</label>;
 }
 
 export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {

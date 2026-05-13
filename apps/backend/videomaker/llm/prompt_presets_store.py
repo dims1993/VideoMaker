@@ -23,7 +23,7 @@ BUNDLED_PRESET_ID = "videomaker_youtube_psych_fin_v1"
 BUNDLED_PRESET_NAME = "YouTube · Psicología y finanzas (reflexivo)"
 
 BUNDLED_REFLECTIVE_ID = "videomaker_reflective_10min_v1"
-BUNDLED_REFLECTIVE_NAME = "★ Vídeo reflexivo 10 min — pausas + stock integrado"
+BUNDLED_REFLECTIVE_NAME = "★ Vídeo reflexivo 10 min — pausas + referencias visuales"
 
 
 def _path() -> Path:

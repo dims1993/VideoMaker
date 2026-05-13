@@ -16,12 +16,24 @@ import { usePromptLibrary } from "../prompt/usePromptLibrary";
 import { useScriptWriterLibrary } from "../scriptWriter/useScriptWriterLibrary";
 import { PipelineStepsAside } from "./PipelineStepsAside";
 import { PipelineWorkspace } from "./PipelineWorkspace";
+import { BodySceneRouterPanel } from "./BodySceneRouterPanel";
+import { HookSceneRouterPanel } from "./HookSceneRouterPanel";
+import { ImagePromptWriterPanel } from "./ImagePromptWriterPanel";
+import { ImagesGenerationPanel } from "./ImagesGenerationPanel";
+import { MetadataPanel } from "./MetadataPanel";
+import { RenderDraftPanel } from "./MontagePanels";
 import { ScriptWriterPanel } from "./ScriptWriterPanel";
 import { VoiceoversGenerationPanel } from "./VoiceoversGenerationPanel";
 
 const PROMPT_STEP_ID = "prompt";
 const SCRIPT_WRITER_STEP_ID = "script_writer";
+const METADATA_STEP_ID = "metadata";
+const HOOK_SCENE_ROUTER_STEP_ID = "hook_scene_router";
+const BODY_SCENE_ROUTER_STEP_ID = "body_scene_router";
+const IMAGE_PROMPT_WRITER_STEP_ID = "image_prompt_writer";
+const IMAGES_GENERATION_STEP_ID = "images_generation";
 const VOICE_STEP_ID = "voiceovers_generation";
+const RENDER_DRAFT_STEP_ID = "render_draft";
 
 export type CreatePipelineCardProps = {
   pipelineState: PipelineState | null;
@@ -53,6 +65,7 @@ export type CreatePipelineCardProps = {
   setMaxChars: (v: number) => void;
   maxSeg: number;
   setMaxSeg: (v: number) => void;
+  refreshSession?: () => void | Promise<void>;
 };
 
 export function CreatePipelineCard({
@@ -85,10 +98,12 @@ export function CreatePipelineCard({
   setMaxChars,
   maxSeg,
   setMaxSeg,
+  refreshSession,
 }: CreatePipelineCardProps) {
   const promptLib = usePromptLibrary();
   const scriptLib = useScriptWriterLibrary();
   const [scriptFragmentIndex, setScriptFragmentIndex] = useState<number | null>(null);
+  const [renderNoMusic, setRenderNoMusic] = useState(false);
   const { loadPromptTemplates, setPromptTemplateId, applyTemplateFromApi, setPromptTopic } = promptLib;
   const {
     loadScriptWriterTemplates,
@@ -251,7 +266,7 @@ export function CreatePipelineCard({
       <div className="mt-3 grid gap-3 lg:grid-cols-[280px_1fr]">
         <PipelineStepsAside steps={steps} selectedId={openPipelineStepId} onSelectStep={onOpenStep} />
 
-        <section className="rounded-2xl border border-slate-200 bg-white p-4">
+        <section className="rounded-2xl border border-slate-700 bg-slate-900 p-4">
           {openPipelineStepId ? (
             <PipelineWorkspace
               stepTitle={stepTitle}
@@ -261,13 +276,26 @@ export function CreatePipelineCard({
               startDisabled={!!busy || stepState === "running"}
               onStartStep={() =>
                 void run(`Start step · ${openPipelineStepId}`, async () => {
+                  // For the Prompt step: auto-save template if no ID yet (nuevo template flow)
+                  let resolvedPromptTemplateId = promptLib.promptTemplateId.trim();
+                  if (openPipelineStepId === PROMPT_STEP_ID && !resolvedPromptTemplateId) {
+                    const hasContent = !!(
+                      promptLib.promptSystem.trim() ||
+                      promptLib.promptUser.trim() ||
+                      promptLib.promptName.trim()
+                    );
+                    if (hasContent) {
+                      resolvedPromptTemplateId = await promptLib.saveTemplate();
+                    }
+                  }
+
                   await postJson(`/api/pipeline/step/rerun`, {
                     work: workApplied,
                     step_id: openPipelineStepId,
                     ...(openPipelineStepId === PROMPT_STEP_ID
                       ? {
-                          ...(promptLib.promptTemplateId.trim()
-                            ? { prompt_template_id: promptLib.promptTemplateId.trim() }
+                          ...(resolvedPromptTemplateId
+                            ? { prompt_template_id: resolvedPromptTemplateId }
                             : {}),
                           prompt_topic: promptLib.promptTopic,
                         }
@@ -286,13 +314,29 @@ export function CreatePipelineCard({
                           ...(scriptFragmentIndex !== null ? { script_fragment_index: scriptFragmentIndex } : {}),
                         }
                       : {}),
+                    ...(openPipelineStepId === METADATA_STEP_ID ||
+                    openPipelineStepId === HOOK_SCENE_ROUTER_STEP_ID ||
+                    openPipelineStepId === IMAGE_PROMPT_WRITER_STEP_ID
+                      ? {
+                          keywords: kw,
+                          context: ctx,
+                          lang,
+                          minutes,
+                          provider,
+                          model,
+                        }
+                      : {}),
+                    ...(openPipelineStepId === RENDER_DRAFT_STEP_ID
+                      ? { render_no_music: renderNoMusic }
+                      : {}),
                   });
                   await refreshPipeline();
+                  await refreshSession?.();
                 })
               }
             >
               {openPipelineStepId === PROMPT_STEP_ID ? (
-                <PromptLibraryPanel run={run} locked={promptLocked} promptStepState={promptStepState} library={promptLib} />
+                <PromptLibraryPanel run={run} locked={promptLocked} promptStepState={promptStepState} library={promptLib} provider={provider} model={model} />
               ) : openPipelineStepId === SCRIPT_WRITER_STEP_ID ? (
                 <ScriptWriterPanel
                   run={run}
@@ -316,6 +360,52 @@ export function CreatePipelineCard({
                   setScriptFragmentIndex={setScriptFragmentIndex}
                   refreshPipeline={refreshPipeline}
                 />
+              ) : openPipelineStepId === METADATA_STEP_ID ? (
+                <MetadataPanel
+                  run={run}
+                  workApplied={workApplied}
+                  lang={lang}
+                  refreshPipeline={refreshPipeline}
+                  metadataStepState={
+                    steps.find((s) => s.id === METADATA_STEP_ID)?.state ?? "idle"
+                  }
+                />
+              ) : openPipelineStepId === HOOK_SCENE_ROUTER_STEP_ID ? (
+                <HookSceneRouterPanel
+                  run={run}
+                  workApplied={workApplied}
+                  refreshPipeline={refreshPipeline}
+                  hookStepState={
+                    steps.find((s) => s.id === HOOK_SCENE_ROUTER_STEP_ID)?.state ?? "idle"
+                  }
+                />
+              ) : openPipelineStepId === BODY_SCENE_ROUTER_STEP_ID ? (
+                <BodySceneRouterPanel
+                  run={run}
+                  workApplied={workApplied}
+                  refreshPipeline={refreshPipeline}
+                  bodyStepState={
+                    steps.find((s) => s.id === BODY_SCENE_ROUTER_STEP_ID)?.state ?? "idle"
+                  }
+                />
+              ) : openPipelineStepId === IMAGE_PROMPT_WRITER_STEP_ID ? (
+                <ImagePromptWriterPanel
+                  run={run}
+                  workApplied={workApplied}
+                  refreshPipeline={refreshPipeline}
+                  imagePromptStepState={
+                    steps.find((s) => s.id === IMAGE_PROMPT_WRITER_STEP_ID)?.state ?? "idle"
+                  }
+                />
+              ) : openPipelineStepId === IMAGES_GENERATION_STEP_ID ? (
+                <ImagesGenerationPanel
+                  run={run}
+                  workApplied={workApplied}
+                  refreshPipeline={refreshPipeline}
+                  imagesStepState={
+                    steps.find((s) => s.id === IMAGES_GENERATION_STEP_ID)?.state ?? "idle"
+                  }
+                />
               ) : openPipelineStepId === VOICE_STEP_ID ? (
                 <VoiceoversGenerationPanel
                   session={session}
@@ -330,13 +420,25 @@ export function CreatePipelineCard({
                   setMaxChars={setMaxChars}
                   maxSeg={maxSeg}
                   setMaxSeg={setMaxSeg}
+                  voiceStepState={steps.find((s) => s.id === VOICE_STEP_ID)?.state ?? "idle"}
+                  refreshSession={refreshSession}
+                />
+              ) : openPipelineStepId === RENDER_DRAFT_STEP_ID ? (
+                <RenderDraftPanel
+                  session={session}
+                  renderNoMusic={renderNoMusic}
+                  setRenderNoMusic={setRenderNoMusic}
+                  workApplied={workApplied}
+                  renderStepState={(steps.find((s) => s.id === RENDER_DRAFT_STEP_ID)?.state ?? "idle") as "idle" | "running" | "done" | "error"}
+                  renderStepDetail={steps.find((s) => s.id === RENDER_DRAFT_STEP_ID)?.detail}
+                  pipelineLastError={pipelineState?.last_error ?? null}
                 />
               ) : (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">Definiremos este proceso a continuación.</div>
+                <div className="rounded-xl border border-slate-700 bg-slate-800 p-4 text-sm text-slate-400">Definiremos este proceso a continuación.</div>
               )}
             </PipelineWorkspace>
           ) : (
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">Selecciona un proceso en la columna izquierda para empezar.</div>
+            <div className="rounded-xl border border-slate-700 bg-slate-800 p-4 text-sm text-slate-400">Selecciona un proceso en la columna izquierda para empezar.</div>
           )}
         </section>
       </div>

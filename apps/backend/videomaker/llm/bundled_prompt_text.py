@@ -33,7 +33,7 @@ YOUTUBE_PSYCH_FINANCE_USER_EXTRA = dedent(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Plantilla 2 · Vídeo reflexivo 10 min — pausas + búsqueda de stock integrada
+# Plantilla 2 · Vídeo reflexivo 10 min — pausas + referencias visuales integradas
 # ─────────────────────────────────────────────────────────────────────────────
 REFLECTIVE_10MIN_USER_EXTRA = dedent(
     """
@@ -93,20 +93,20 @@ REFLECTIVE_10MIN_USER_EXTRA = dedent(
       [B-ROLL: reloj analógico en primer plano, segundero moviéndose despacio, fondo desenfocado]
 
     ══════════════════════════════════════════
-    SECCIÓN D · ETIQUETAS [B-ROLL] — CAMBIO DE IMAGEN Y BÚSQUEDA EN STOCK
+    SECCIÓN D · ETIQUETAS [B-ROLL] — CAMBIO DE IMAGEN
     ══════════════════════════════════════════
 
     FRECUENCIA: Inserta [B-ROLL: …] cada dos frases del texto narrable, justo donde debe cambiar la imagen en pantalla. No las acumules al final del párrafo ni de la sección.
 
     POSICIÓN: La etiqueta va entre la frase que termina y la frase que empieza el nuevo plano, no al final de todo.
 
-    DESCRIPCIÓN DETALLADA PARA STOCK:
-    Cada etiqueta debe tener descripción suficiente para buscar en Pexels/Pixabay/Unsplash. Incluye:
+    DESCRIPCIÓN DETALLADA PARA MONTAJE O IA:
+    Cada etiqueta debe describir con claridad el plano (sujeto, acción, luz, atmósfera). Incluye:
       - Sujeto principal (qué se ve)
       - Acción o estado (quieto, en movimiento, primer plano, aéreo…)
       - Atmósfera o luz (amanecer, contraluz, neón nocturno, interior cálido…)
       - Emoción o concepto visual que refuerza el guion
-      - Términos en inglés al final entre paréntesis para búsqueda directa en stock
+      - Términos en inglés al final entre paréntesis como referencia rápida para el equipo de imagen
 
     Ejemplo de etiqueta bien formada:
       [B-ROLL: persona sola en banco de parque otoñal, mirada perdida al horizonte, luz dorada de atardecer, sensación de soledad contemplativa — (lonely person park bench autumn golden hour)]
@@ -121,14 +121,14 @@ REFLECTIVE_10MIN_USER_EXTRA = dedent(
       - Contraste luz-sombra, amanecer-anochecer, interior-exterior
 
     ══════════════════════════════════════════
-    SECCIÓN E · KEYWORDS PARA STOCK AL FINAL DEL GUION
+    SECCIÓN E · KEYWORDS DE REFERENCIA VISUAL AL FINAL DEL GUION
     ══════════════════════════════════════════
 
     Al terminar el guion, añade un bloque separado (no narrable) con:
 
-      KEYWORDS PARA STOCK (Pexels/Pixabay):
+      REFERENCIA VISUAL (keywords en inglés):
       [lista de 15-20 términos en inglés, ordenados de más a menos relevante,
-       separados por coma, pensados para encontrar vídeos en bancos de stock]
+       separados por coma, útiles para moodboards, generación con IA u orientación de arte]
 
     ══════════════════════════════════════════
     RECUERDA

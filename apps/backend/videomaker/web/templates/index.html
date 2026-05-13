@@ -36,7 +36,6 @@
         <div class="muted">
           <div>Guion: {% if has_script %}<span class="ok">OK</span>{% else %}<span class="bad">FALTA</span>{% endif %}</div>
           <div>Narración: {% if has_narration %}<span class="ok">OK</span>{% else %}<span class="bad">FALTA</span>{% endif %}</div>
-          <div>Stock clips: <b>{{ stock_count }}</b></div>
           <div>Draft: {% if draft_exists %}<span class="ok">OK</span>{% else %}<span class="bad">FALTA</span>{% endif %}</div>
         </div>
         <hr />
@@ -50,7 +49,6 @@
         <div class="muted">
           <div>Provider: <code>{{ env.VIDEOMAKER_LLM_PROVIDER or "openai" }}</code></div>
           <div>OPENAI_API_KEY: {% if env.OPENAI_API_KEY %}<span class="ok">SI</span>{% else %}<span class="bad">NO</span>{% endif %}</div>
-          <div>PEXELS_API_KEY: {% if env.PEXELS_API_KEY %}<span class="ok">SI</span>{% else %}<span class="bad">NO</span>{% endif %}</div>
           <div class="muted">Ollama: <code>{{ env.OLLAMA_BASE_URL or "http://localhost:11434" }}</code> modelo: <code>{{ env.OLLAMA_MODEL or "llama3.2:latest" }}</code></div>
         </div>
         <hr />
@@ -230,29 +228,7 @@
         </div>
 
         <hr />
-        <h3 style="margin: 0 0 10px 0;">3) Stock (Pexels)</h3>
-        <form method="post" action="/stock-fetch">
-          <input type="hidden" name="work" value="{{ work }}" />
-          <div class="row">
-            <div>
-              <label>Idioma hint</label>
-              <select name="lang">
-                <option value="es" selected>es</option>
-                <option value="en">en</option>
-              </select>
-            </div>
-            <div>
-              <label>Max clips</label>
-              <input type="number" name="max_clips" value="25" />
-            </div>
-          </div>
-          <div style="margin-top: 10px;">
-            <button type="submit">Descargar stock/</button>
-          </div>
-        </form>
-
-        <hr />
-        <h3 style="margin: 0 0 10px 0;">4) Render</h3>
+        <h3 style="margin: 0 0 10px 0;">3) Render</h3>
         <form method="post" action="/render-draft">
           <input type="hidden" name="work" value="{{ work }}" />
           <label><input type="checkbox" name="no_music" /> Sin música auto</label>
@@ -260,7 +236,7 @@
             <button type="submit">Renderizar draft.mp4</button>
           </div>
         </form>
-        <div class="muted" style="margin-top: 10px;">El MP4 se guarda en <code>{{ draft_path }}</code>.</div>
+        <div class="muted" style="margin-top: 10px;">El MP4 usa <code>narracion.wav</code> y, si existen, imágenes en <code>pipeline/images/</code>; si no hay imágenes, fondo sólido. Se guarda en <code>{{ draft_path }}</code>.</div>
       </div>
     </div>
   </body>

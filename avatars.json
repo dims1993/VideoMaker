@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "nerd_boy_v1",
+      "name": "Nerd Boy (canal por defecto)",
+      "description": "chibi cartoon boy, round thick-frame glasses, chubby face, short messy brown hair, light blue button-up shirt with small chest pocket, dark navy pants, simple flat shoes, flat 2D cartoon illustration, thick black outline",
+      "expressions": [
+        "smiling",
+        "surprised",
+        "bored",
+        "sleepy",
+        "neutral",
+        "explaining",
+        "worried",
+        "thinking",
+        "excited"
+      ],
+      "style_notes": "Whiteboard animation style, flat 2D illustration, thick black outlines, clean simple colors, educational YouTube channel aesthetic.",
+      "created_at": "2026-05-12T15:46:04Z",
+      "bundled": true
+    }
+  ]
+}

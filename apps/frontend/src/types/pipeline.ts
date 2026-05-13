@@ -11,4 +11,6 @@ export type PipelineState = {
   current_step?: string | null;
   steps: PipelineStepState[];
   last_error?: string | null;
+  /** ISO del último cambio del manifest (backend). */
+  updated_at?: string;
 };

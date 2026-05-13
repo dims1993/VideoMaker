@@ -5,7 +5,6 @@ export type EnvInfo = {
   OLLAMA_BASE_URL?: string;
   OLLAMA_MODEL?: string;
   OPENAI_API_KEY?: boolean;
-  PEXELS_API_KEY?: boolean;
 };
 
 export type Session = {
@@ -15,7 +14,7 @@ export type Session = {
   has_script: boolean;
   has_narration: boolean;
   has_clone_reference: boolean;
-  stock_count: number;
+  pipeline_images_count?: number;
   draft_exists: boolean;
   draft_path: string;
   env: EnvInfo;
@@ -25,7 +24,7 @@ export type Session = {
   tts_reference?: { mode: string; preview_filename: string | null };
   narration_versions?: { name: string; url: string; active: boolean }[];
   active_narration?: string | null;
-  urls: { narration: string; clone_reference: string };
+  urls: { narration: string; clone_reference: string; draft?: string };
 };
 
 export type TaskStatus = { id: string; state: string; result?: unknown; error?: string };

@@ -7,13 +7,133 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
-import { Btn, Input, Label, Select, TextArea } from "../../../components/ui";
-import { patchJson, postJson, putJson } from "../../../services/api";
+import { Btn, ExpandableTextArea, Input, Label, Select, TextArea } from "../../../components/ui";
+import {
+  deleteReq,
+  patchJson,
+  postJson,
+  putJson,
+  readApiError,
+} from "../../../services/api";
 import type {
   ScriptWriterLibraryStore,
   ScriptWriterNarrativePreset,
 } from "../scriptWriter/useScriptWriterLibrary";
 import type { RunFn } from "../types";
+import { PipelineSection as Section } from "./PipelineSection";
+
+// ── AI Script Writer Generator ───────────────────────────────────────────
+function AIScriptWriterGenerator({
+  onGenerated,
+}: {
+  onGenerated: (t: Record<string, unknown>) => void;
+}) {
+  const [transcriptText, setTranscriptText] = useState("");
+  const [fileName, setFileName] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (ev) => setTranscriptText((ev.target?.result as string) ?? "");
+    reader.readAsText(file);
+  };
+
+  const handleGenerate = async () => {
+    if (!transcriptText.trim()) { setError("Carga un documento o pega el contenido primero."); return; }
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/script-writer-templates/generate-from-transcript", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript_text: transcriptText }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({})) as { detail?: string };
+        throw new Error(j.detail ?? `Error ${res.status}`);
+      }
+      const data = await res.json() as Record<string, unknown>;
+      onGenerated(data);
+      setTranscriptText("");
+      setFileName("");
+      if (fileRef.current) fileRef.current.value = "";
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Error desconocido");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-slate-600 bg-slate-800 p-4 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold tracking-wider capitalize text-white">Generador De Template Con IA</div>
+          <div className="text-[11px] text-slate-400 mt-0.5">
+            Carga las transcripciones del canal y Claude Sonnet analizará el estilo de guion y rellenará todos los campos del template automáticamente.
+          </div>
+        </div>
+        <span className="shrink-0 rounded-md border border-violet-500/40 bg-violet-950/40 px-2 py-0.5 text-[10px] font-mono text-violet-300">
+          Claude Sonnet
+        </span>
+      </div>
+
+      <div>
+        <label className="block text-xs font-medium text-slate-400 mb-1">Documento de transcripciones</label>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => fileRef.current?.click()}
+            className="rounded-lg border border-slate-600 bg-slate-700 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-600 transition-colors">
+            Seleccionar archivo
+          </button>
+          {fileName ? (
+            <>
+              <span className="text-xs text-slate-400 truncate max-w-[180px]" title={fileName}>{fileName}</span>
+              <button type="button" onClick={() => { setFileName(""); setTranscriptText(""); if (fileRef.current) fileRef.current.value = ""; }}
+                className="text-slate-500 hover:text-slate-300 text-xs">✕</button>
+            </>
+          ) : (
+            <span className="text-xs text-slate-500">.json, .txt o .md</span>
+          )}
+          <input ref={fileRef} type="file" accept=".json,.txt,.md" className="hidden" onChange={handleFile} />
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-xs font-medium text-slate-400 mb-1">
+          O pega el contenido directamente
+          {transcriptText && <span className="ml-2 text-slate-500">({transcriptText.length.toLocaleString()} chars)</span>}
+        </label>
+        <textarea
+          value={transcriptText}
+          onChange={(e) => { setTranscriptText(e.target.value); setFileName(""); }}
+          placeholder="Pega aquí las transcripciones del canal…"
+          rows={4}
+          className="w-full rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 text-xs text-slate-200 placeholder:text-slate-500 focus:border-slate-400 focus:outline-none resize-none"
+        />
+      </div>
+
+      {error && (
+        <div className="rounded-lg border border-rose-500/40 bg-rose-950/30 px-3 py-2 text-xs text-rose-400">{error}</div>
+      )}
+
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] text-slate-500">Requiere <code className="rounded bg-slate-700 px-1">ANTHROPIC_API_KEY</code> en .env</span>
+        <div className="flex items-center gap-2">
+          {loading && <span className="text-xs text-violet-400 animate-pulse">Claude analizando…</span>}
+          <Btn type="button" className="bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50"
+            disabled={loading || !transcriptText.trim()} onClick={handleGenerate}>
+            {loading ? "Analizando…" : "Analizar y rellenar template"}
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 type NarrativePresetApi = {
   id: string;
@@ -34,6 +154,14 @@ type LlmDefaultsResponse = {
   llm_provider: string;
   ollama_model: string;
   openai_model: string;
+};
+
+type SavedGuionEntry = {
+  id: string;
+  title: string;
+  created_at: string;
+  byte_len: number;
+  preview: string;
 };
 
 export function ScriptWriterPanel({
@@ -94,6 +222,12 @@ export function ScriptWriterPanel({
   const [narrativePresets, setNarrativePresets] = useState<
     NarrativePresetApi[]
   >([]);
+  const [savedGuiones, setSavedGuiones] = useState<SavedGuionEntry[]>([]);
+  const [saveToLibTitle, setSaveToLibTitle] = useState("");
+  const [selectedSavedId, setSelectedSavedId] = useState("");
+  const fileImportRef = useRef<HTMLInputElement>(null);
+  const [scriptEditorFullscreen, setScriptEditorFullscreen] = useState(false);
+  const scriptModalTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -254,6 +388,38 @@ export function ScriptWriterPanel({
     void loadScript();
   }, [loadScript, scriptStepState, workApplied]);
 
+  const loadSavedGuiones = useCallback(async () => {
+    try {
+      const r = await fetch("/api/saved-guiones?limit=100");
+      if (!r.ok) return;
+      const j = (await r.json()) as { items?: SavedGuionEntry[] };
+      setSavedGuiones(Array.isArray(j.items) ? j.items : []);
+    } catch {
+      setSavedGuiones([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadSavedGuiones();
+  }, [loadSavedGuiones]);
+
+  useEffect(() => {
+    if (!scriptEditorFullscreen) return;
+    const ta = scriptModalTextareaRef.current;
+    if (ta) {
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setScriptEditorFullscreen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [scriptEditorFullscreen]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -311,620 +477,452 @@ export function ScriptWriterPanel({
     return sorted;
   }, [ollamaNames, model]);
 
-  const lockReason =
-    scriptStepState === "running"
-      ? "Generando guion con el LLM…"
-      : locked
-        ? "Guion generado (guion.txt, pipeline/script.txt y pipeline/script.json con texto TTS + B-roll por sección)."
-        : null;
+  /** Solo durante la inferencia del LLM: no guardar (condición de carrera). Con paso «done» sí puedes editar el texto. */
+  const scriptIoLocked = scriptStepState === "running";
 
+  const lockReason = scriptStepState === "running" ? "Generando guion con el LLM…" : null;
   return (
-    <div className="space-y-3">
-      {lockReason ? (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
-          <span className="font-semibold">Bloqueado.</span> {lockReason} Para
-          cambiar inputs o regenerar desde cero usa <strong>Reset</strong> en la
-          pipeline.
+    <div className={`rounded-2xl bg-slate-900 p-4 space-y-3 ${locked ? "opacity-95" : ""}`}>
+
+      {/* ── Avisos ── */}
+      {lockReason && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
+          <span className="font-semibold">Generando.</span> {lockReason} Espera a que termine antes de guardar el guion.
+          Para cambiar plantilla o regenerar desde cero usa <strong>Reset</strong> en la pipeline.
         </div>
-      ) : null}
-
-      <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
-        <span className="font-semibold text-slate-900">Script Writer</span> ensambla
-        la plantilla del <strong>Catálogo Prompt</strong> (base narrativa y voz), este{" "}
-        <strong>template de Script Writer</strong> (ritmo, densidad, estructura) y el bloque
-        de <strong>formato técnico</strong> del pipeline (OUTLINE/GUIÓN, <code className="rounded bg-white px-1">[CATEGORIA]</code>, <code className="rounded bg-white px-1">[B-ROLL]</code>
-        , stock) común a todas las sesiones. Al ejecutar el paso, el motor une todo; la
-        sesión vive en{" "}
-        <code className="rounded bg-white px-1">pipeline/prompt.json</code>.
-      </div>
-
-      <div
-        className={`rounded-2xl border border-slate-200 bg-white p-4 ring-1 ring-slate-100 ${locked ? "opacity-95" : ""}`}
-      >
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-          Catálogo · template de Script Writer
+      )}
+      {locked && !scriptIoLocked && (
+        <div className="rounded-xl border border-slate-600 bg-slate-800 px-3 py-2 text-xs text-slate-400">
+          Paso Script Writer ya ejecutado. Puedes <strong className="text-slate-200">editar y guardar</strong> el texto del guion abajo; para regenerar usa <strong className="text-slate-200">Reset</strong>.
         </div>
-        <fieldset
-          disabled={locked}
-          className="mt-3 min-w-0 space-y-3 border-0 p-0"
-        >
-          <div className="flex flex-wrap items-end justify-between gap-2">
-            <div className="min-w-[260px] flex-1">
-              <Label>Template</Label>
-              <Select
-                value={lib.scriptWriterTemplateId}
-                onChange={async (e) => {
-                  const id = e.target.value;
-                  lib.setScriptWriterTemplateId(id);
-                  if (!id) return;
-                  await lib.applyTemplateFromApi(id);
-                }}
-              >
-                <option value="">(nuevo template)</option>
-                {lib.scriptWriterTemplates.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Btn
-                type="button"
-                className="bg-white text-slate-900 ring-1 ring-slate-200 hover:bg-slate-50"
-                onClick={() =>
-                  run("Recargar templates SW", async () => {
-                    await lib.loadScriptWriterTemplates();
-                  })
-                }
-              >
-                Reload
-              </Btn>
-              <Btn
-                type="button"
-                className="bg-slate-900 text-white hover:bg-slate-800"
-                disabled={!lib.swName.trim()}
-                onClick={() =>
-                  run("Guardar template Script Writer", async () => {
-                    await lib.saveTemplate();
-                  })
-                }
-              >
-                Save
-              </Btn>
-              <Btn
-                type="button"
-                className="bg-white text-rose-700 ring-1 ring-rose-200 hover:bg-rose-50 disabled:opacity-40"
-                disabled={!lib.scriptWriterTemplateId}
-                onClick={() =>
-                  run("Eliminar template Script Writer", async () => {
-                    if (!lib.scriptWriterTemplateId) return;
-                    if (!confirm("¿Eliminar este template de Script Writer?"))
-                      return;
-                    await lib.deleteTemplate();
-                  })
-                }
-              >
-                Delete
-              </Btn>
-            </div>
-          </div>
+      )}
 
-          <div>
-            <Label>Nombre</Label>
-            <Input
-              value={lib.swName}
-              onChange={(e) => lib.setSwName(e.target.value)}
-              placeholder="Ej: Long-form finanzas · ritmo documental"
-            />
-          </div>
+      <fieldset disabled={locked} className="min-w-0 space-y-3 border-0 p-0">
 
-          <div className="grid gap-3 md:grid-cols-3">
+        {/* ── Template selector ── */}
+        <div className="flex flex-wrap items-end justify-between gap-2 rounded-xl border border-slate-600 bg-gradient-to-r from-slate-800 to-slate-700 px-4 py-3 shadow-md">
+          <div className="min-w-[260px] flex-1">
+            <label className="mb-1 block text-[10px] font-semibold uppercase tracking-widest text-slate-400">
+              Template Script Writer
+            </label>
+            <select
+              value={lib.scriptWriterTemplateId}
+              onChange={async (e) => {
+                const id = e.target.value;
+                lib.setScriptWriterTemplateId(id);
+                if (!id) return;
+                await lib.applyTemplateFromApi(id);
+              }}
+              className="w-full rounded-lg border border-slate-600 bg-slate-900 px-2.5 py-1.5 text-sm text-slate-200 focus:border-slate-400 focus:outline-none"
+            >
+              <option value="">(nuevo template)</option>
+              {lib.scriptWriterTemplates.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Btn type="button" className="border border-slate-500 bg-slate-700 text-slate-200 hover:bg-slate-600"
+              onClick={() => run("Recargar templates SW", async () => { await lib.loadScriptWriterTemplates(); })}>
+              Reload
+            </Btn>
+            <Btn type="button" className="bg-white text-slate-900 hover:bg-slate-100" disabled={!lib.swName.trim()}
+              onClick={() => run("Guardar template Script Writer", async () => { await lib.saveTemplate(); })}>
+              Save
+            </Btn>
+            <Btn type="button" className="border border-rose-500/50 bg-rose-950/40 text-rose-400 hover:bg-rose-950/70 disabled:opacity-40"
+              disabled={!lib.scriptWriterTemplateId}
+              onClick={() => run("Eliminar template Script Writer", async () => {
+                if (!lib.scriptWriterTemplateId) return;
+                if (!confirm("¿Eliminar este template de Script Writer?")) return;
+                await lib.deleteTemplate();
+              })}>
+              Delete
+            </Btn>
+          </div>
+        </div>
+
+        {/* ── Generador IA: solo en modo nuevo template ── */}
+        {!lib.scriptWriterTemplateId && !locked && (
+          <AIScriptWriterGenerator
+            onGenerated={(data) => {
+              lib.applyTemplateFields(data as Parameters<typeof lib.applyTemplateFields>[0]);
+            }}
+          />
+        )}
+
+        {/* ── Template settings ── */}
+        <Section id="sw-template" title="Configuración Del Template" description="Nombre, ritmo, densidad narrativa y estructura de actos del guion.">
+          <div className="space-y-3">
             <div>
-              <Label>Ritmo (VO)</Label>
-              <Select
-                value={lib.swPacing}
-                onChange={(e) =>
-                  lib.setSwPacing(e.target.value as typeof lib.swPacing)
-                }
-              >
-                <option value="">(sin override: hereda de la plantilla Prompt)</option>
-                <option value="short">Corto / rápido</option>
-                <option value="mixed">Mixto</option>
-                <option value="long">Largo / documental</option>
-              </Select>
+              <Label>Nombre</Label>
+              <Input value={lib.swName} onChange={(e) => lib.setSwName(e.target.value)} placeholder="Ej: Long-form finanzas · ritmo documental" />
             </div>
-            <div>
-              <Label>Densidad de datos</Label>
-              <Select
-                value={lib.swDataDensity}
-                onChange={(e) =>
-                  lib.setSwDataDensity(
-                    e.target.value as typeof lib.swDataDensity,
-                  )
-                }
-              >
-                <option value="">(por defecto)</option>
-                <option value="low">Baja (historia / metáfora)</option>
-                <option value="medium">Media</option>
-                <option value="high">Alta (cifras, series temporales)</option>
-              </Select>
-            </div>
-            <div>
-              <Label>Estructura de escenas</Label>
-              <Select
-                value={lib.swStructure}
-                onChange={(e) => {
+            <div className="grid gap-3 md:grid-cols-3">
+              <div>
+                <Label>Ritmo (VO)</Label>
+                <Select value={lib.swPacing} onChange={(e) => lib.setSwPacing(e.target.value as typeof lib.swPacing)}>
+                  <option value="">(sin override: hereda de Prompt)</option>
+                  <option value="short">Corto / rápido</option>
+                  <option value="mixed">Mixto</option>
+                  <option value="long">Largo / documental</option>
+                </Select>
+              </div>
+              <div>
+                <Label>Densidad de datos</Label>
+                <Select value={lib.swDataDensity} onChange={(e) => lib.setSwDataDensity(e.target.value as typeof lib.swDataDensity)}>
+                  <option value="">(por defecto)</option>
+                  <option value="low">Baja (historia / metáfora)</option>
+                  <option value="medium">Media</option>
+                  <option value="high">Alta (cifras, series temporales)</option>
+                </Select>
+              </div>
+              <div>
+                <Label>Estructura de escenas</Label>
+                <Select value={lib.swStructure} onChange={(e) => {
                   const v = e.target.value as typeof lib.swStructure;
                   lib.setSwStructure(v);
                   if (v !== "four_act") lib.setSwNarrativePreset("");
-                }}
-              >
-                <option value="">(por defecto: 5 bloques)</option>
-                <option value="default_five_blocks">
-                  5 bloques (intro + 3 pilares + cierre)
-                </option>
-                <option value="four_act">
-                  4 actos (hook → promesa → cuerpo → cierre)
-                </option>
-              </Select>
-            </div>
-          </div>
-
-          {lib.swStructure === "four_act" ? (
-            <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-3">
-              <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-                Reparto orientativo (4 actos)
+                }}>
+                  <option value="">(por defecto: 5 bloques)</option>
+                  <option value="default_five_blocks">5 bloques (intro + 3 pilares + cierre)</option>
+                  <option value="four_act">4 actos (hook → promesa → cuerpo → cierre)</option>
+                </Select>
               </div>
-              <p className="mt-1 text-[11px] leading-snug text-slate-600">
-                Elige una <strong>categoría</strong> para fijar los{" "}
-                <strong>pesos %</strong> del tiempo total. Si cambias la{" "}
-                <strong>Duración orientativa</strong> más abajo, los porcentajes
-                se mantienen y solo se recalculan minutos y palabras (~150/min).
-              </p>
-              <div className="mt-3 grid gap-3 lg:grid-cols-3">
-                <div>
-                  <Label>Categoría narrativa</Label>
-                  <Select
-                    value={lib.swNarrativePreset}
-                    onChange={(e) => {
+            </div>
+
+            {lib.swStructure === "four_act" && (
+              <div className="rounded-xl border border-slate-600 bg-slate-700/50 px-3 py-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-300">Reparto orientativo (4 actos)</div>
+                <div className="mt-3 grid gap-3 lg:grid-cols-3">
+                  <div>
+                    <Label>Categoría narrativa</Label>
+                    <Select value={lib.swNarrativePreset} onChange={(e) => {
                       const v = e.target.value as ScriptWriterNarrativePreset;
-                      if (v === "") {
-                        lib.setSwNarrativePreset("");
-                        lib.setSwFragmentWeights("");
-                        return;
-                      }
-                      if (v === "custom") {
-                        lib.setSwNarrativePreset("custom");
-                        return;
-                      }
+                      if (v === "") { lib.setSwNarrativePreset(""); lib.setSwFragmentWeights(""); return; }
+                      if (v === "custom") { lib.setSwNarrativePreset("custom"); return; }
                       const p = narrativePresets.find((x) => x.id === v);
                       lib.setSwNarrativePreset(v);
-                      if (p?.weights?.length === 4)
-                        lib.setSwFragmentWeights(p.weights.join(", "));
-                    }}
-                  >
-                    <option value="">Seleccione categoría</option>
-                    {narrativePresets.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                    <option value="custom">
-                      Personalizado (editar pesos en fragmentación)
-                    </option>
-                  </Select>
-                </div>
-                <div className="lg:col-span-2 overflow-x-auto">
-                  {fourActPreview && fourActPreview.length === 4 ? (
-                    <table className="w-full min-w-[340px] border-collapse text-left text-[11px]">
-                      <thead>
-                        <tr className="border-b border-slate-200 text-slate-500">
-                          <th className="py-1 pr-2 font-medium">Acto</th>
-                          <th className="py-1 pr-2 font-medium">Segmento</th>
-                          <th className="py-1 pr-2 font-medium">Peso</th>
-                          <th className="py-1 pr-2 font-medium">Min</th>
-                          <th className="py-1 font-medium">
-                            Palabras (~150 wpm)
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {fourActPreview.map((row, i) => (
-                          <tr
-                            key={i}
-                            className="border-b border-slate-100 text-slate-800"
-                          >
-                            <td className="py-1 pr-2 font-mono text-slate-600">
-                              {["I", "II", "III", "IV"][i]}
-                            </td>
-                            <td className="py-1 pr-2">{row.label}</td>
-                            <td className="py-1 pr-2 font-mono">
-                              {row.pct.toFixed(0)}%
-                            </td>
-                            <td className="py-1 pr-2 font-mono">
-                              {row.min.toFixed(1)}
-                            </td>
-                            <td className="py-1 font-mono">~{row.words}</td>
+                      if (p?.weights?.length === 4) lib.setSwFragmentWeights(p.weights.join(", "));
+                    }}>
+                      <option value="">Seleccione categoría</option>
+                      {narrativePresets.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
+                      <option value="custom">Personalizado (editar pesos en fragmentación)</option>
+                    </Select>
+                  </div>
+                  <div className="lg:col-span-2 overflow-x-auto">
+                    {fourActPreview && fourActPreview.length === 4 && (
+                      <table className="w-full min-w-[340px] border-collapse text-left text-[11px]">
+                        <thead>
+                          <tr className="border-b border-slate-600 text-slate-400">
+                            <th className="py-1 pr-2 font-medium">Acto</th>
+                            <th className="py-1 pr-2 font-medium">Segmento</th>
+                            <th className="py-1 pr-2 font-medium">Peso</th>
+                            <th className="py-1 pr-2 font-medium">Min</th>
+                            <th className="py-1 font-medium">Palabras</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  ) : null}
-                  <p className="mt-2 text-[10px] leading-snug text-slate-500">
-                    Vista previa usando la duración del pipeline (
-                    {Number.isFinite(minutes) && minutes > 0 ? minutes : 20}{" "}
-                    min).
-                  </p>
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          <div className="max-w-xl">
-            <Label>Fragmentación (chunking)</Label>
-            <Select
-              value={lib.swChunking}
-              onChange={(e) =>
-                lib.setSwChunking(e.target.value as typeof lib.swChunking)
-              }
-            >
-              <option value="">Seleccione el modo de fragmentación</option>
-              <option value="full_pass">
-                Guion completo en una pasada (pipeline)
-              </option>
-              <option value="outline_act1_only">
-                Solo OUTLINE + primer bloque (~0–5 min VO); marcador
-                &lt;&lt;&lt; FIN_FRAGMENTO_1 &gt;&gt;&gt;
-              </option>
-              <option value="sequential_fragments">
-                {structureSequentialCopy.optionLabel}
-              </option>
-            </Select>
-            {lib.swChunking === "outline_act1_only" ? (
-              <p className="mt-1 text-[11px] leading-snug text-slate-500">
-                Una pasada corta; luego sigues en otra ejecución. El modelo no
-                puede esperar en tiempo real.
-              </p>
-            ) : lib.swChunking === "sequential_fragments" ? (
-              <p className="mt-1 text-[11px] leading-snug text-slate-500">
-                {structureSequentialCopy.helperSequential}
-              </p>
-            ) : lib.swChunking === "full_pass" ? (
-              <p className="mt-1 text-[11px] leading-snug text-slate-500">
-                Por defecto el pipeline intenta el guion completo (puede usar
-                modo interno por etapas si está configurado).
-              </p>
-            ) : (
-              <p className="mt-1 text-[11px] leading-snug text-slate-500">
-                Seleccione cómo generar el guion: una pasada, solo el primer
-                bloque o por fragmentos acoplados a «Estructura de escenas».
-              </p>
-            )}
-          </div>
-
-          {lib.swChunking === "sequential_fragments" ? (
-            <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 px-3 py-3 text-xs text-indigo-950">
-              <div className="font-semibold uppercase tracking-wide text-indigo-900/90">
-                Progreso por fragmentos
-              </div>
-              <p className="mt-1 text-[11px] leading-snug text-indigo-900/85">
-                {structureSequentialCopy.weightsIntro}
-              </p>
-              <div className="mt-2">
-                <Label>Pesos de minutos por fragmento (opcional)</Label>
-                <TextArea
-                  value={lib.swFragmentWeights}
-                  onChange={(e) => {
-                    lib.setSwFragmentWeights(e.target.value);
-                    if (lib.swStructure === "four_act")
-                      lib.setSwNarrativePreset("custom");
-                  }}
-                  className="min-h-[52px] font-mono text-[11px]"
-                  placeholder={
-                    lib.swStructure === "four_act"
-                      ? "Ej. Nick-like 4 actos: 0.14, 0.18, 0.46, 0.22"
-                      : "Ej. 5 bloques: 0.10, 0.20, 0.22, 0.22, 0.26"
-                  }
-                  disabled={locked}
-                />
-                <p className="mt-1 text-[10px] leading-snug text-indigo-900/75">
-                  Un número por fragmento en orden (hook→…→cierre). Pueden ser
-                  proporciones cualquiera: se <strong>normalizan</strong> a suma
-                  1. Guarda el template tras editar.
-                </p>
-              </div>
-              <div className="mt-2 flex flex-wrap items-end gap-2">
-                <div className="min-w-[220px] flex-1">
-                  <Label>Qué fragmento genera “Start step”</Label>
-                  <Select
-                    value={
-                      scriptFragmentIndex === null
-                        ? ""
-                        : String(scriptFragmentIndex)
-                    }
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setScriptFragmentIndex(v === "" ? null : Number(v));
-                    }}
-                  >
-                    <option value="">Automático (primer pendiente)</option>
-                    {Array.from(
-                      {
-                        length:
-                          fragSteps.length > 0
-                            ? fragSteps.length
-                            : lib.swStructure === "four_act"
-                              ? 4
-                              : 5,
-                      },
-                      (_, i) => (
-                        <option key={i} value={String(i)}>
-                          Fragmento {i}
-                          {fragSteps[i]?.label
-                            ? ` · ${fragSteps[i].label}`
-                            : ""}
-                        </option>
-                      ),
+                        </thead>
+                        <tbody>
+                          {fourActPreview.map((row, i) => (
+                            <tr key={i} className="border-b border-slate-700 text-slate-300">
+                              <td className="py-1 pr-2 font-mono text-slate-400">{["I", "II", "III", "IV"][i]}</td>
+                              <td className="py-1 pr-2">{row.label}</td>
+                              <td className="py-1 pr-2 font-mono">{row.pct.toFixed(0)}%</td>
+                              <td className="py-1 pr-2 font-mono">{row.min.toFixed(1)}</td>
+                              <td className="py-1 font-mono">~{row.words}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     )}
-                  </Select>
-                  <p className="mt-1 text-[10px] leading-snug text-indigo-900/80">
-                    <strong>Automático:</strong> tras cada Start step el servidor elige el siguiente fragmento que siga{" "}
-                    <em>pending</em>; el texto del fragmento anterior queda guardado en disco y no tienes que cambiar el índice a
-                    mano. <strong>Si eliges un número fijo</strong> (p. ej. Fragmento 0), cada Start step vuelve a generar ese
-                    mismo índice hasta que cambies a otro o a Automático. Marcar <em>Completado</em> solo ordena tu revisión; no
-                    es obligatorio para pasar al siguiente en modo Automático.
-                  </p>
+                    <p className="mt-2 text-[10px] text-slate-500">Duración del pipeline: {Number.isFinite(minutes) && minutes > 0 ? minutes : 20} min.</p>
+                  </div>
                 </div>
-                <Btn
-                  type="button"
-                  className="bg-white text-indigo-900 ring-1 ring-indigo-200 hover:bg-indigo-50"
-                  onClick={() => void loadFragState()}
-                >
-                  Refrescar lista
-                </Btn>
-                <Btn
-                  type="button"
-                  className="bg-white text-rose-800 ring-1 ring-rose-200 hover:bg-rose-50"
-                  onClick={() =>
-                    run("Reiniciar fragmentación", async () => {
-                      if (
-                        !confirm(
-                          "¿Borrar estado y chunks guardados en esta sesión?",
-                        )
-                      )
-                        return;
-                      await postJson(`/api/script-fragmentation/reset`, {
-                        work: workApplied,
-                      });
+              </div>
+            )}
+
+            <div>
+              <Label>Instrucciones sistema (overlay)</Label>
+              <TextArea value={lib.swSystem} onChange={(e) => lib.setSwSystem(e.target.value)} className="min-h-[72px] text-xs" placeholder="Reglas extra para la generación del guion (se añaden al system del LLM tras el template de Prompt)." />
+            </div>
+            <div>
+              <Label>Instrucciones usuario (overlay)</Label>
+              <TextArea value={lib.swUser} onChange={(e) => lib.setSwUser(e.target.value)} className="min-h-[72px] text-xs" placeholder="Preferencias de formato, ejemplos a evitar, compliance…" />
+            </div>
+          </div>
+        </Section>
+
+        {/* ── Sesión ── */}
+        <Section id="sw-session" title="Sesión" description="Keywords, contexto, idioma, duración y modelo LLM para esta ejecución.">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <Label>Keywords (coma)</Label>
+              <Input value={kw} onChange={(e) => setKw(e.target.value)} placeholder="tema, ángulo, intención…" />
+            </div>
+            <div className="sm:col-span-2">
+              <ExpandableTextArea
+                label="Contexto"
+                value={ctx}
+                onChange={setCtx}
+                placeholder="Público, tono, datos que deben aparecer…"
+                modalTitle="Contexto del Script Writer"
+                variant="output"
+              />
+            </div>
+            <div>
+              <Label>Idioma</Label>
+              <Select value={lang} onChange={(e) => setLang(e.target.value)}>
+                <option value="es">es</option>
+                <option value="en">en</option>
+              </Select>
+            </div>
+            <div>
+              <Label>Duración orientativa (min)</Label>
+              <Input type="number" step={0.5} min={1} value={minutes} onChange={(e) => setMinutes(Number(e.target.value))} />
+            </div>
+            <div>
+              <Label>Proveedor LLM</Label>
+              <Select value={provider} onChange={(e) => setProvider(e.target.value)}>
+                <option value="">(usar .env)</option>
+                <option value="ollama">ollama</option>
+                <option value="openai">openai-compatible</option>
+              </Select>
+            </div>
+            <div>
+              <Label>Modelo</Label>
+              {useOpenAiModelField ? (
+                <Input value={model} onChange={(e) => setModel(e.target.value)} placeholder={llmDefaults?.openai_model?.trim() || "gpt-4o-mini"} />
+              ) : (
+                <>
+                  <Select value={model} onChange={(e) => setModel(e.target.value)}>
+                    <option value="">Predeterminado (.env)</option>
+                    {ollamaSelectOptions.map((name) => (<option key={name} value={name}>{name}</option>))}
+                  </Select>
+                  {ollamaListHint && <p className="mt-1 text-[11px] text-amber-400">{ollamaListHint}</p>}
+                </>
+              )}
+            </div>
+          </div>
+        </Section>
+
+        {/* ── Fragmentación ── */}
+        <Section id="sw-chunking" title="Fragmentación" description="Modo de generación del guion: pasada completa, primer bloque o fragmentos por acto.">
+          <div className="space-y-3">
+            <div className="max-w-xl">
+              <Label>Modo de fragmentación</Label>
+              <Select value={lib.swChunking} onChange={(e) => lib.setSwChunking(e.target.value as typeof lib.swChunking)}>
+                <option value="">Seleccione el modo</option>
+                <option value="full_pass">Guion completo en una pasada</option>
+                <option value="outline_act1_only">Solo OUTLINE + primer bloque</option>
+                <option value="sequential_fragments">{structureSequentialCopy.optionLabel}</option>
+              </Select>
+              {lib.swChunking === "sequential_fragments" && <p className="mt-1 text-[11px] text-slate-400">{structureSequentialCopy.helperSequential}</p>}
+            </div>
+
+            {lib.swChunking === "sequential_fragments" && (
+              <div className="rounded-xl border border-slate-600 bg-slate-700/40 px-3 py-3 space-y-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-300">Progreso por fragmentos</div>
+                <p className="text-[11px] text-slate-400">{structureSequentialCopy.weightsIntro}</p>
+                <div>
+                  <Label>Pesos de minutos por fragmento (opcional)</Label>
+                  <TextArea value={lib.swFragmentWeights} onChange={(e) => { lib.setSwFragmentWeights(e.target.value); if (lib.swStructure === "four_act") lib.setSwNarrativePreset("custom"); }}
+                    className="min-h-[52px] font-mono text-[11px]"
+                    placeholder={lib.swStructure === "four_act" ? "Ej: 0.14, 0.18, 0.46, 0.22" : "Ej: 0.10, 0.20, 0.22, 0.22, 0.26"}
+                    disabled={locked} />
+                </div>
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="min-w-[220px] flex-1">
+                    <Label>Qué fragmento genera "Start step"</Label>
+                    <Select value={scriptFragmentIndex === null ? "" : String(scriptFragmentIndex)} onChange={(e) => { const v = e.target.value; setScriptFragmentIndex(v === "" ? null : Number(v)); }}>
+                      <option value="">Automático (primer pendiente)</option>
+                      {Array.from({ length: fragSteps.length > 0 ? fragSteps.length : lib.swStructure === "four_act" ? 4 : 5 }, (_, i) => (
+                        <option key={i} value={String(i)}>Fragmento {i}{fragSteps[i]?.label ? ` · ${fragSteps[i].label}` : ""}</option>
+                      ))}
+                    </Select>
+                  </div>
+                  <Btn type="button" className="border border-slate-500 bg-slate-700 text-slate-200 hover:bg-slate-600" onClick={() => void loadFragState()}>Refrescar</Btn>
+                  <Btn type="button" className="border border-rose-500/50 bg-rose-950/40 text-rose-400 hover:bg-rose-950/70"
+                    onClick={() => run("Reiniciar fragmentación", async () => {
+                      if (!confirm("¿Borrar estado y chunks guardados?")) return;
+                      await postJson(`/api/script-fragmentation/reset`, { work: workApplied });
                       setScriptFragmentIndex(null);
                       await loadFragState();
                       await refreshPipeline();
-                    })
-                  }
-                >
-                  Reiniciar fragmentación
-                </Btn>
+                    })}>
+                    Reiniciar
+                  </Btn>
+                </div>
+                {!fragExists ? (
+                  <p className="text-[11px] text-slate-500">Sin estado en disco aún. Aparecerá tras el primer Start step.</p>
+                ) : (
+                  <ul className="space-y-2 border-t border-slate-600 pt-3">
+                    {fragSteps.map((s, i) => (
+                      <li key={`${s.id}-${i}`} className="flex flex-wrap items-center gap-2">
+                        <span className="w-6 font-mono text-[11px] text-slate-400">{i}</span>
+                        <span className="min-w-[120px] flex-1 text-slate-200 font-medium">{s.label}</span>
+                        <span className="rounded-full border border-slate-600 bg-slate-700 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">{s.status}</span>
+                        <label className="flex cursor-pointer items-center gap-1 text-[11px] text-slate-300">
+                          <input type="checkbox" className="rounded border-slate-500" checked={s.status === "done"} disabled={locked}
+                            onChange={(e) => run(s.status === "done" ? "Marcar pendiente" : "Marcar completado", async () => {
+                              await patchJson(`/api/script-fragmentation`, { work: workApplied, index: i, complete: e.target.checked });
+                              await loadFragState();
+                              await refreshPipeline();
+                            })} />
+                          Completado
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
-              {!fragExists ? (
-                <p className="mt-2 text-[11px] text-indigo-800/90">
-                  Aún no hay estado en disco: tras el primer Start step aparecerán
-                  los pasos con su estado (pending / generated / done).
-                </p>
-              ) : (
-                <ul className="mt-3 space-y-2 border-t border-indigo-200/80 pt-3">
-                  {fragSteps.map((s, i) => (
-                    <li
-                      key={`${s.id}-${i}`}
-                      className="flex flex-wrap items-center gap-2"
-                    >
-                      <span className="w-6 font-mono text-[11px] text-indigo-700">
-                        {i}
-                      </span>
-                      <span className="min-w-[120px] flex-1 font-medium">
-                        {s.label}
-                      </span>
-                      <span className="rounded-full bg-white px-2 py-0.5 text-[10px] uppercase tracking-wide ring-1 ring-indigo-200">
-                        {s.status}
-                      </span>
-                      <label className="flex cursor-pointer items-center gap-1 text-[11px]">
-                        <input
-                          type="checkbox"
-                          className="rounded border-indigo-300"
-                          checked={s.status === "done"}
-                          disabled={locked}
-                          onChange={(e) =>
-                            run(
-                              s.status === "done"
-                                ? "Marcar fragmento pendiente"
-                                : "Marcar fragmento completado",
-                              async () => {
-                                await patchJson(`/api/script-fragmentation`, {
-                                  work: workApplied,
-                                  index: i,
-                                  complete: e.target.checked,
-                                });
-                                await loadFragState();
-                                await refreshPipeline();
-                              },
-                            )
-                          }
-                        />
-                        Completado
-                      </label>
-                    </li>
-                  ))}
-                </ul>
-              )}
+            )}
+          </div>
+        </Section>
+
+        {/* ── Biblioteca de guiones ── */}
+        <Section id="sw-library" title="Biblioteca De Guiones" description="Archiva, importa o aplica copias de guiones guardadas en disco.">
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="min-w-[12rem] flex-1">
+                <Label>Título al archivar (opcional)</Label>
+                <Input value={saveToLibTitle} onChange={(e) => setSaveToLibTitle(e.target.value)} placeholder="p. ej. Motivación v2" />
+              </div>
+              <Btn type="button" className="border border-slate-500 bg-slate-700 text-slate-200 hover:bg-slate-600"
+                onClick={() => run("Archivar guion de sesión", async () => {
+                  await postJson("/api/saved-guiones", { work: workApplied, title: saveToLibTitle.trim() || null });
+                  await loadSavedGuiones();
+                })}>
+                Archivar sesión
+              </Btn>
+              <Btn type="button" className="border border-slate-500 bg-slate-700 text-slate-200 hover:bg-slate-600"
+                onClick={() => run("Archivar texto del editor", async () => {
+                  await postJson("/api/saved-guiones/raw", { text: scriptText, title: saveToLibTitle.trim() || null });
+                  await loadSavedGuiones();
+                })}>
+                Archivar editor
+              </Btn>
             </div>
-          ) : null}
-
-          <div>
-            <Label>Instrucciones sistema (overlay)</Label>
-            <TextArea
-              value={lib.swSystem}
-              onChange={(e) => lib.setSwSystem(e.target.value)}
-              className="min-h-[72px] text-xs"
-              placeholder="Opcional: reglas extra solo para la generación del guion (se añaden al system del LLM tras el template de Prompt)."
-            />
-          </div>
-          <div>
-            <Label>Instrucciones usuario (overlay)</Label>
-            <TextArea
-              value={lib.swUser}
-              onChange={(e) => lib.setSwUser(e.target.value)}
-              className="min-h-[72px] text-xs"
-              placeholder="Opcional: preferencias de formato, ejemplos a evitar, compliance…"
-            />
-          </div>
-        </fieldset>
-      </div>
-
-      <fieldset disabled={locked} className="min-w-0 space-y-3 border-0 p-0">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="sm:col-span-2">
-            <Label>Keywords (coma)</Label>
-            <Input
-              value={kw}
-              onChange={(e) => setKw(e.target.value)}
-              placeholder="tema, ángulo, intención…"
-            />
-          </div>
-          <div className="sm:col-span-2">
-            <Label>Contexto</Label>
-            <TextArea
-              value={ctx}
-              onChange={(e) => setCtx(e.target.value)}
-              placeholder="Público, tono, datos que deben aparecer…"
-            />
-          </div>
-          <div>
-            <Label>Idioma</Label>
-            <Select value={lang} onChange={(e) => setLang(e.target.value)}>
-              <option value="es">es</option>
-              <option value="en">en</option>
-            </Select>
-          </div>
-          <div>
-            <Label>Duración orientativa (min)</Label>
-            <Input
-              type="number"
-              step={0.5}
-              min={1}
-              value={minutes}
-              onChange={(e) => setMinutes(Number(e.target.value))}
-            />
-          </div>
-          <div>
-            <Label>Proveedor LLM</Label>
-            <Select
-              value={provider}
-              onChange={(e) => setProvider(e.target.value)}
-            >
-              <option value="">(usar .env)</option>
-              <option value="ollama">ollama</option>
-              <option value="openai">openai-compatible (API futura)</option>
-            </Select>
-          </div>
-          <div>
-            <Label>Modelo</Label>
-            {useOpenAiModelField ? (
-              <Input
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder={llmDefaults?.openai_model?.trim() || "gpt-4o-mini"}
-              />
-            ) : (
-              <>
-                <Select
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                >
-                  <option value="">Predeterminado (.env)</option>
-                  {ollamaSelectOptions.map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
+            <div className="flex flex-wrap items-center gap-2">
+              <input ref={fileImportRef} type="file" accept=".txt,.md,text/plain,text/markdown" className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]; e.target.value = "";
+                  if (!f) return;
+                  void run("Subir guion a biblioteca", async () => {
+                    const fd = new FormData();
+                    fd.append("file", f); fd.append("title", saveToLibTitle.trim());
+                    const r = await fetch("/api/saved-guiones/upload", { method: "POST", body: fd });
+                    if (!r.ok) throw new Error((await readApiError(r)) || r.statusText);
+                    await loadSavedGuiones();
+                  });
+                }} />
+              <Btn type="button" className="bg-white text-slate-900 hover:bg-slate-100" onClick={() => fileImportRef.current?.click()}>
+                Subir archivo
+              </Btn>
+            </div>
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="min-w-[14rem] flex-1">
+                <Label>Seleccionar copia guardada</Label>
+                <Select value={selectedSavedId} onChange={(e) => setSelectedSavedId(e.target.value)}>
+                  <option value="">— Elegir —</option>
+                  {savedGuiones.map((s) => (<option key={s.id} value={s.id}>{s.title} · {(s.byte_len / 1024).toFixed(1)} KiB</option>))}
                 </Select>
-                {ollamaListHint ? (
-                  <p className="mt-1 text-[11px] leading-snug text-amber-800">
-                    Lista local no disponible ({ollamaListHint}). Mostrando
-                    modelos de respaldo; reinicia Ollama o recarga la página.
-                  </p>
-                ) : null}
-              </>
-            )}
-            {!useOpenAiModelField ? (
-              <p className="mt-1 text-[11px] leading-snug text-slate-500">
-                Valor inicial según{" "}
-                <code className="rounded bg-slate-100 px-1">OLLAMA_MODEL</code>{" "}
-                en <code className="rounded bg-slate-100 px-1">.env</code>.
-                Vacío = usar lo configurado en el servidor.
-              </p>
-            ) : (
-              <p className="mt-1 text-[11px] leading-snug text-slate-500">
-                Para cuando conectes una API compatible (OpenAI, Anthropic vía
-                proxy, etc.). Vacío ={" "}
-                <code className="rounded bg-slate-100 px-1">OPENAI_MODEL</code>{" "}
-                del <code className="rounded bg-slate-100 px-1">.env</code>.
-              </p>
-            )}
+              </div>
+              <Btn type="button" className="bg-white text-slate-900 hover:bg-slate-100 disabled:opacity-40" disabled={!selectedSavedId}
+                onClick={() => run("Usar guion de biblioteca", async () => {
+                  await postJson(`/api/saved-guiones/${encodeURIComponent(selectedSavedId)}/apply`, { work: workApplied });
+                  await loadScript(); await refreshPipeline();
+                })}>
+                Usar en sesión
+              </Btn>
+              <Btn type="button" className="border border-rose-500/50 bg-rose-950/40 text-rose-400 hover:bg-rose-950/70 disabled:opacity-40" disabled={!selectedSavedId}
+                onClick={() => run("Eliminar copia", async () => {
+                  await deleteReq(`/api/saved-guiones/${encodeURIComponent(selectedSavedId)}`);
+                  setSelectedSavedId(""); await loadSavedGuiones();
+                })}>
+                Borrar copia
+              </Btn>
+            </div>
+            <div className="flex flex-wrap gap-2 border-t border-slate-600 pt-2">
+              <Btn type="button" className="bg-emerald-600 text-white hover:bg-emerald-700"
+                onClick={() => run("Aplicar editor a sesión", async () => {
+                  await postJson("/api/saved-guiones/apply-text", { work: workApplied, text: scriptText });
+                  await loadScript(); await refreshPipeline();
+                })}>
+                Aplicar texto del editor a la sesión
+              </Btn>
+            </div>
           </div>
-        </div>
+        </Section>
+
       </fieldset>
 
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-          Salida · guion.txt + pipeline/script.json
+      {/* ── Guion ── */}
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm font-semibold tracking-wider capitalize text-white">Salida · Guion</div>
+          <div className="flex gap-2">
+            <Btn type="button" className="border border-slate-600 bg-slate-800 text-slate-200 hover:bg-slate-700" onClick={() => void loadScript()}>
+              Recargar desde disco
+            </Btn>
+            <div role="button" tabIndex={0}
+              className="cursor-pointer rounded-lg border border-slate-600 bg-slate-800 px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700"
+              onClick={() => setScriptEditorFullscreen(true)}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setScriptEditorFullscreen(true); } }}>
+              Pantalla completa
+            </div>
+          </div>
         </div>
-        <Btn
-          type="button"
-          className="bg-white text-slate-900 ring-1 ring-slate-200 hover:bg-slate-50"
-          onClick={() => void loadScript()}
-        >
-          Recargar desde disco
-        </Btn>
-      </div>
-
-      <fieldset disabled={locked} className="min-w-0 space-y-2 border-0 p-0">
-        <Label>Texto del guion</Label>
-        <TextArea
-          value={scriptText}
-          onChange={(e) => setScriptText(e.target.value)}
-          className="min-h-[280px] font-mono text-xs"
-          placeholder="Tras Start step aparecerá aquí el guion generado; puedes editarlo y guardar si el paso no está bloqueado."
-        />
+        <div role="button" tabIndex={0} aria-label="Abrir editor de guion a pantalla completa"
+          onClick={() => setScriptEditorFullscreen(true)}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setScriptEditorFullscreen(true); } }}
+          className={`min-h-[200px] w-full cursor-pointer rounded-xl border border-slate-600 bg-slate-800 px-3 py-2 text-left font-mono text-xs leading-relaxed shadow-inner outline-none transition hover:border-slate-500 ${scriptText.trim() ? "text-slate-200" : "text-slate-500"}`}>
+          <span className="block max-h-[280px] overflow-y-auto whitespace-pre-wrap">
+            {scriptText.trim() ? scriptText : "Tras Start step aparecerá el guion aquí. Pulsa para abrir el editor completo."}
+          </span>
+        </div>
         <div className="flex flex-wrap gap-2">
-          <Btn
-            className="bg-slate-900 text-white hover:bg-slate-800"
-            onClick={() =>
-              run("Guardar guion", async () => {
-                await putJson(`/api/script`, {
-                  work: workApplied,
-                  text: scriptText,
-                });
-                await loadScript();
-              })
-            }
-          >
+          <Btn className="bg-white text-slate-900 hover:bg-slate-100" disabled={scriptIoLocked}
+            onClick={() => run("Guardar guion", async () => {
+              await putJson(`/api/script`, { work: workApplied, text: scriptText });
+              await loadScript();
+            })}>
             Guardar en sesión
           </Btn>
           <span className="self-center text-[11px] text-slate-500">
-            Guarda texto plano en{" "}
-            <code className="rounded bg-slate-100 px-1">guion.txt</code>,
-            sincroniza{" "}
-            <code className="rounded bg-slate-100 px-1">
-              pipeline/script.txt
-            </code>{" "}
-            y actualiza{" "}
-            <code className="rounded bg-slate-100 px-1">
-              pipeline/script.json
-            </code>{" "}
-            (TTS + secciones / B-roll).
+            Guarda en <code className="rounded bg-slate-700 px-1">guion.txt</code> y sincroniza <code className="rounded bg-slate-700 px-1">pipeline/script.json</code>.
           </span>
         </div>
-      </fieldset>
+      </div>
+
+      {scriptEditorFullscreen && (
+        <div className="fixed inset-0 z-[200] flex items-stretch justify-center bg-slate-950/55 p-2 sm:p-4"
+          role="dialog" aria-modal="true" aria-label="Editor de guion a pantalla completa">
+          <div className="flex h-[min(calc(100vh-1rem),920px)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
+              <span className="text-sm font-semibold text-slate-900">Editor de guion · vista completa</span>
+              <div className="flex flex-wrap gap-2">
+                <Btn type="button" className="bg-slate-900 text-white hover:bg-slate-800" disabled={scriptIoLocked}
+                  onClick={() => run("Guardar guion", async () => {
+                    await putJson(`/api/script`, { work: workApplied, text: scriptText });
+                    await loadScript();
+                    setScriptEditorFullscreen(false);
+                  })}>
+                  Guardar en sesión
+                </Btn>
+                <Btn type="button" className="bg-white text-slate-800 ring-1 ring-slate-200 hover:bg-slate-50" onClick={() => setScriptEditorFullscreen(false)}>
+                  Cerrar sin guardar
+                </Btn>
+              </div>
+            </div>
+            <textarea ref={scriptModalTextareaRef} readOnly={scriptIoLocked} value={scriptText} onChange={(e) => setScriptText(e.target.value)} spellCheck
+              className={`min-h-0 flex-1 resize-none border-0 px-4 py-3 font-mono text-sm leading-relaxed outline-none focus:ring-0 ${scriptIoLocked ? "cursor-wait bg-slate-100 text-slate-600" : "bg-white text-slate-900"}`} />
+            <p className="shrink-0 border-t border-slate-100 px-4 py-2 text-[11px] leading-snug text-slate-500">
+              <kbd className="rounded bg-slate-100 px-1 font-mono text-[10px]">Esc</kbd> · «Cerrar sin guardar» descarta los cambios. «Guardar en sesión» guarda y cierra.
+              {scriptIoLocked && <span className="font-medium text-amber-800"> Generando — solo lectura hasta que termine.</span>}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,0 +1,948 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Btn, Input, Label, Select, TextArea } from "../../../components/ui";
+import { postJson, putJson, deleteReq } from "../../../services/api";
+import type { RunFn } from "../types";
+
+type TargetGenerator = "midjourney" | "flux" | "dall_e" | "sd" | "custom";
+
+const AVATAR_DEFAULT_DESCRIPTION =
+  "chibi cartoon boy, round thick-frame glasses, chubby face, short messy brown hair, " +
+  "light blue button-up shirt with small chest pocket, dark navy pants, simple flat shoes, " +
+  "flat 2D cartoon illustration, thick black outline";
+
+interface AvatarSummary {
+  id: string;
+  name: string;
+  created_at: string;
+  bundled: boolean;
+}
+
+interface AvatarFull extends AvatarSummary {
+  description: string;
+  expressions: string[];
+  style_notes: string;
+  intro_enabled: boolean;
+  intro_character_name: string;
+  outro_enabled: boolean;
+  outro_character_name: string;
+}
+
+// ── Types for individual prompts ──────────────────────────────────────────
+interface PromptItem {
+  id?: string;
+  act?: string;
+  role?: string;
+  expression?: string;
+  situation?: string;
+  narration_text?: string;
+  ai_prompt?: string;
+  negative_prompt?: string;
+  segment_text?: string;
+  // legacy
+  text?: string;
+  [key: string]: unknown;
+}
+
+const ACT_COLORS: Record<string, string> = {
+  hook:  "bg-amber-100 text-amber-800",
+  intro: "bg-violet-100 text-violet-800",
+  body:  "bg-slate-100 text-slate-700",
+  cta:   "bg-blue-100 text-blue-800",
+  outro: "bg-emerald-100 text-emerald-800",
+};
+const ACT_LABELS: Record<string, string> = {
+  hook: "Hook", intro: "Intro", body: "Body", cta: "CTA", outro: "Outro",
+};
+const EXPRESSIONS = [
+  "smiling","surprised","bored","sleepy","neutral",
+  "explaining","worried","thinking","excited",
+];
+
+// ── PromptCard ─────────────────────────────────────────────────────────────
+function PromptCard({
+  item,
+  index,
+  expanded,
+  onToggle,
+  onSave,
+  readOnly,
+}: {
+  item: PromptItem;
+  index: number;
+  expanded: boolean;
+  onToggle: () => void;
+  onSave: (updated: PromptItem) => void;
+  readOnly: boolean;
+}) {
+  const act = item.act ?? (item.role?.includes("intro") ? "intro" : item.role?.includes("outro") ? "outro" : "body");
+  const actColor = ACT_COLORS[act] ?? ACT_COLORS.body;
+  const actLabel = ACT_LABELS[act] ?? act;
+  const preview = item.situation || item.ai_prompt || item.text || "";
+
+  // Local edit state
+  const [editAct, setEditAct] = useState(act);
+  const [editExpression, setEditExpression] = useState(item.expression ?? "");
+  const [editSituation, setEditSituation] = useState(item.situation ?? "");
+  const [editNarration, setEditNarration] = useState(item.narration_text ?? "");
+  const [editPrompt, setEditPrompt] = useState(item.ai_prompt ?? item.text ?? "");
+  const [editNeg, setEditNeg] = useState(item.negative_prompt ?? "");
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  // Reset local state when card collapses
+  useEffect(() => {
+    if (!expanded) {
+      setEditAct(item.act ?? act);
+      setEditExpression(item.expression ?? "");
+      setEditSituation(item.situation ?? "");
+      setEditNarration(item.narration_text ?? "");
+      setEditPrompt(item.ai_prompt ?? item.text ?? "");
+      setEditNeg(item.negative_prompt ?? "");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded]);
+
+  useEffect(() => {
+    if (expanded) cardRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [expanded]);
+
+  const handleSave = () => {
+    onSave({
+      ...item,
+      act: editAct,
+      expression: editExpression,
+      situation: editSituation,
+      narration_text: editNarration || undefined,
+      ai_prompt: editPrompt,
+      negative_prompt: editNeg,
+    });
+  };
+
+  const isSpecial = item.id === "intro" || item.id === "outro";
+
+  return (
+    <div
+      ref={cardRef}
+      className={`rounded-lg border transition-all ${expanded ? "border-slate-300 shadow-sm" : "border-slate-200 hover:border-slate-300"}`}
+    >
+      {/* Collapsed header — always visible, clickable */}
+      <button
+        type="button"
+        className="flex w-full items-start gap-2 px-3 py-2 text-left"
+        onClick={onToggle}
+        disabled={readOnly}
+      >
+        {/* Index badge */}
+        <span className="mt-0.5 shrink-0 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-500">
+          {isSpecial ? (item.id ?? index + 1) : `#${index + 1}`}
+        </span>
+        {/* Act badge */}
+        <span className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${actColor}`}>
+          {actLabel}
+        </span>
+        {/* Expression badge */}
+        {editExpression && (
+          <span className="mt-0.5 shrink-0 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-700">
+            {editExpression}
+          </span>
+        )}
+        {/* Preview text */}
+        <span className="flex-1 truncate text-[11px] text-slate-700 leading-snug">
+          {preview.slice(0, 110)}{preview.length > 110 ? "…" : ""}
+        </span>
+        {/* Segment snippet */}
+        {item.segment_text && (
+          <span className="hidden shrink-0 max-w-[140px] truncate text-[10px] text-slate-400 sm:block">
+            "{(item.segment_text as string).slice(0, 50)}…"
+          </span>
+        )}
+        {/* Chevron */}
+        <span className={`shrink-0 text-slate-400 transition-transform ${expanded ? "rotate-180" : ""}`}>
+          ▾
+        </span>
+      </button>
+
+      {/* Expanded editor */}
+      {expanded && (
+        <div className="border-t border-slate-100 px-3 pb-3 pt-2 space-y-2">
+          {/* Original segment text (readonly) */}
+          {item.segment_text && (
+            <div className="rounded bg-slate-50 px-2 py-1.5 text-[10px] text-slate-500 italic leading-snug">
+              <span className="font-semibold not-italic text-slate-400">Texto original: </span>
+              {item.segment_text as string}
+            </div>
+          )}
+
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div>
+              <Label>Acto</Label>
+              <Select value={editAct} onChange={(e) => setEditAct(e.target.value)}>
+                <option value="hook">Hook</option>
+                <option value="intro">Intro (coletilla)</option>
+                <option value="body">Body</option>
+                <option value="cta">CTA</option>
+                <option value="outro">Outro (cierre)</option>
+              </Select>
+            </div>
+            <div>
+              <Label>Expresión del avatar</Label>
+              <Select value={editExpression} onChange={(e) => setEditExpression(e.target.value)}>
+                <option value="">— sin especificar —</option>
+                {EXPRESSIONS.map((ex) => (
+                  <option key={ex} value={ex}>{ex}</option>
+                ))}
+              </Select>
+            </div>
+          </div>
+
+          <div>
+            <Label>Situación (descripción breve)</Label>
+            <TextArea
+              value={editSituation}
+              onChange={(e) => setEditSituation(e.target.value)}
+              className="min-h-[48px] text-xs"
+              placeholder="¿Qué hace el avatar? ¿Qué hay de fondo?"
+            />
+          </div>
+
+          {/* Narration text: show for intro/outro or if it has content */}
+          {(isSpecial || editNarration) && (
+            <div>
+              <Label>Texto de narración (TTS)</Label>
+              <TextArea
+                value={editNarration}
+                onChange={(e) => setEditNarration(e.target.value)}
+                className="min-h-[52px] text-xs"
+                placeholder="Texto que leerá el TTS para esta imagen…"
+              />
+            </div>
+          )}
+
+          <div>
+            <Label>Prompt IA (ai_prompt)</Label>
+            <TextArea
+              value={editPrompt}
+              onChange={(e) => setEditPrompt(e.target.value)}
+              className="min-h-[72px] font-mono text-xs"
+              placeholder="Prompt completo en inglés para el generador de imágenes…"
+            />
+          </div>
+
+          <div>
+            <Label>Negative prompt</Label>
+            <Input
+              value={editNeg}
+              onChange={(e) => setEditNeg(e.target.value)}
+              placeholder="realistic, photorealistic, 3D render…"
+              className="font-mono text-xs"
+            />
+          </div>
+
+          <div className="flex gap-2 pt-1">
+            <Btn
+              type="button"
+              className="bg-slate-900 text-white hover:bg-slate-800"
+              onClick={handleSave}
+            >
+              Guardar cambios
+            </Btn>
+            <Btn
+              type="button"
+              className="bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
+              onClick={onToggle}
+            >
+              Cerrar
+            </Btn>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+export function ImagePromptWriterPanel({
+  run,
+  workApplied,
+  refreshPipeline,
+  imagePromptStepState,
+}: {
+  run: RunFn;
+  workApplied: string;
+  refreshPipeline: () => Promise<void>;
+  imagePromptStepState: string;
+}) {
+  const [jsonText, setJsonText] = useState("");
+  const [hasBundle, setHasBundle] = useState(false);
+  const [estimatedPrompts, setEstimatedPrompts] = useState<number | null>(null);
+  const [viewMode, setViewMode] = useState<"cards" | "json">("cards");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  // General settings
+  const [targetGenerator, setTargetGenerator] = useState<TargetGenerator>("midjourney");
+  const [appendMjSuffix, setAppendMjSuffix] = useState(true);
+  const [exportNegativeSeparate, setExportNegativeSeparate] = useState(true);
+  const [settingsNotes, setSettingsNotes] = useState("");
+
+  // Avatar settings
+  const [useAvatar, setUseAvatar] = useState(false);
+  const [avatarSecsPerImage, setAvatarSecsPerImage] = useState(6);
+  const [avatarMaxImages, setAvatarMaxImages] = useState(80);
+
+  // Avatar selector from store
+  const [avatarList, setAvatarList] = useState<AvatarSummary[]>([]);
+  const [selectedAvatarId, setSelectedAvatarId] = useState("");
+  const [selectedAvatarFull, setSelectedAvatarFull] = useState<AvatarFull | null>(null);
+
+  // Avatar editor
+  const [showAvatarEditor, setShowAvatarEditor] = useState(false);
+  const [editingAvatarId, setEditingAvatarId] = useState<string | null>(null); // null = new
+  const [editorName, setEditorName] = useState("");
+  const [editorDescription, setEditorDescription] = useState(AVATAR_DEFAULT_DESCRIPTION);
+  const [editorStyleNotes, setEditorStyleNotes] = useState("");
+  const [editorIntroEnabled, setEditorIntroEnabled] = useState(true);
+  const [editorIntroCharacterName, setEditorIntroCharacterName] = useState("");
+  const [editorOutroEnabled, setEditorOutroEnabled] = useState(true);
+  const [editorOutroCharacterName, setEditorOutroCharacterName] = useState("");
+
+  const generationRunning = imagePromptStepState === "running";
+
+  // ── Loaders ──────────────────────────────────────────────
+
+  const loadAvatarList = useCallback(async () => {
+    const r = await fetch("/api/avatars");
+    if (!r.ok) return;
+    const j = (await r.json()) as { avatars: AvatarSummary[] };
+    setAvatarList(j.avatars ?? []);
+  }, []);
+
+  const loadAvatarDetail = useCallback(async (id: string) => {
+    if (!id) { setSelectedAvatarFull(null); return; }
+    const r = await fetch(`/api/avatars/${encodeURIComponent(id)}`);
+    if (!r.ok) { setSelectedAvatarFull(null); return; }
+    const j = (await r.json()) as AvatarFull;
+    setSelectedAvatarFull(j);
+  }, []);
+
+  const loadBundle = useCallback(async () => {
+    const r = await fetch(
+      `/api/pipeline/image-prompts?work=${encodeURIComponent(workApplied)}`,
+    );
+    if (!r.ok) return;
+    const j = (await r.json()) as { exists?: boolean; bundle?: Record<string, unknown> | null };
+    if (j.exists && j.bundle && typeof j.bundle === "object") {
+      setJsonText(JSON.stringify(j.bundle, null, 2));
+      setHasBundle(true);
+      const b = j.bundle as Record<string, unknown>;
+      if (Array.isArray(b.prompts)) setEstimatedPrompts((b.prompts as unknown[]).length);
+    } else {
+      setJsonText(""); setHasBundle(false); setEstimatedPrompts(null);
+    }
+  }, [workApplied]);
+
+  const loadSettings = useCallback(async () => {
+    const r = await fetch(
+      `/api/pipeline/image-prompt-writer-settings?work=${encodeURIComponent(workApplied)}`,
+    );
+    if (!r.ok) return;
+    const j = (await r.json()) as {
+      target_generator?: string;
+      append_midjourney_suffix?: boolean;
+      export_negative_separate?: boolean;
+      notes?: string;
+      use_avatar?: boolean;
+      avatar_id?: string;
+      avatar_secs_per_image?: number;
+      avatar_max_images?: number;
+    };
+    const tg = j.target_generator;
+    const allowed: TargetGenerator[] = ["midjourney", "flux", "dall_e", "sd", "custom"];
+    setTargetGenerator(tg && allowed.includes(tg as TargetGenerator) ? (tg as TargetGenerator) : "midjourney");
+    if (typeof j.append_midjourney_suffix === "boolean") setAppendMjSuffix(j.append_midjourney_suffix);
+    if (typeof j.export_negative_separate === "boolean") setExportNegativeSeparate(j.export_negative_separate);
+    if (j.notes !== undefined) setSettingsNotes(j.notes);
+    if (typeof j.use_avatar === "boolean") setUseAvatar(j.use_avatar);
+    if (typeof j.avatar_secs_per_image === "number") setAvatarSecsPerImage(j.avatar_secs_per_image);
+    if (typeof j.avatar_max_images === "number") setAvatarMaxImages(j.avatar_max_images);
+    const savedId = j.avatar_id ?? "";
+    setSelectedAvatarId(savedId);
+    await loadAvatarDetail(savedId);
+  }, [workApplied, loadAvatarDetail]);
+
+  useEffect(() => { void loadBundle(); }, [loadBundle, imagePromptStepState, workApplied]);
+  useEffect(() => { void loadSettings(); void loadAvatarList(); }, [loadSettings, loadAvatarList]);
+
+  // When avatar selection changes, load detail
+  useEffect(() => { void loadAvatarDetail(selectedAvatarId); }, [selectedAvatarId, loadAvatarDetail]);
+
+  // ── Persist ───────────────────────────────────────────────
+
+  const saveSettings = async () => {
+    const desc = selectedAvatarFull?.description ?? AVATAR_DEFAULT_DESCRIPTION;
+    await putJson("/api/pipeline/image-prompt-writer-settings", {
+      work: workApplied,
+      target_generator: targetGenerator,
+      append_midjourney_suffix: appendMjSuffix,
+      export_negative_separate: exportNegativeSeparate,
+      notes: settingsNotes.trim(),
+      use_avatar: useAvatar,
+      avatar_id: selectedAvatarId,
+      avatar_description: desc,
+      avatar_secs_per_image: avatarSecsPerImage,
+      avatar_max_images: avatarMaxImages,
+    });
+    await loadSettings();
+  };
+
+  const saveBundle = async () => {
+    let parsed: Record<string, unknown>;
+    try { parsed = JSON.parse(jsonText) as Record<string, unknown>; }
+    catch { alert("JSON no válido. Revisa el formato antes de guardar."); return; }
+    await putJson("/api/pipeline/image-prompts", { work: workApplied, bundle: parsed });
+    await loadBundle();
+    await refreshPipeline();
+  };
+
+  // ── Avatar CRUD ──────────────────────────────────────────
+
+  const openNewAvatarEditor = () => {
+    setEditingAvatarId(null);
+    setEditorName("");
+    setEditorDescription(AVATAR_DEFAULT_DESCRIPTION);
+    setEditorStyleNotes("");
+    setEditorIntroEnabled(true);
+    setEditorIntroCharacterName("");
+    setEditorOutroEnabled(true);
+    setEditorOutroCharacterName("");
+    setShowAvatarEditor(true);
+  };
+
+  const openEditAvatarEditor = (av: AvatarFull) => {
+    setEditingAvatarId(av.id);
+    setEditorName(av.name);
+    setEditorDescription(av.description);
+    setEditorStyleNotes(av.style_notes);
+    setEditorIntroEnabled(av.intro_enabled);
+    setEditorIntroCharacterName(av.intro_character_name);
+    setEditorOutroEnabled(av.outro_enabled);
+    setEditorOutroCharacterName(av.outro_character_name);
+    setShowAvatarEditor(true);
+  };
+
+  const saveAvatarEditor = async () => {
+    if (!editorName.trim()) { alert("El avatar necesita un nombre."); return; }
+    const payload = {
+      name: editorName.trim(),
+      description: editorDescription.trim(),
+      style_notes: editorStyleNotes.trim(),
+      intro_enabled: editorIntroEnabled,
+      intro_character_name: editorIntroCharacterName.trim() || editorName.trim(),
+      outro_enabled: editorOutroEnabled,
+      outro_character_name: editorOutroCharacterName.trim() || editorName.trim(),
+    };
+    if (editingAvatarId) {
+      await putJson(`/api/avatars/${editingAvatarId}`, payload);
+    } else {
+      const created = (await postJson("/api/avatars", payload)) as AvatarFull;
+      setSelectedAvatarId(created.id);
+    }
+    await loadAvatarList();
+    setShowAvatarEditor(false);
+  };
+
+  const deleteSelectedAvatar = async () => {
+    if (!selectedAvatarId || selectedAvatarFull?.bundled) return;
+    if (!confirm(`¿Eliminar el avatar "${selectedAvatarFull?.name ?? selectedAvatarId}"?`)) return;
+    await deleteReq(`/api/avatars/${selectedAvatarId}`);
+    setSelectedAvatarId("");
+    setSelectedAvatarFull(null);
+    await loadAvatarList();
+  };
+
+  // ── Derived UI ────────────────────────────────────────────
+
+  const estimatedLabel = avatarSecsPerImage > 0
+    ? `≈ ${Math.min(avatarMaxImages, Math.round(300 / avatarSecsPerImage))}–${Math.min(avatarMaxImages, Math.round(600 / avatarSecsPerImage))} imgs para 5-10 min de narración`
+    : "";
+
+  return (
+    <div className="rounded-2xl bg-slate-900 p-4 space-y-3">
+      <div className="rounded-xl border border-slate-600 bg-slate-800 px-3 py-2 text-xs text-slate-400">
+        <span className="font-semibold text-white">Image Prompt Writer</span> prepara{" "}
+        <code className="rounded bg-slate-700 px-1">pipeline/image_prompts.json</code> para generadores IA.{" "}
+        <strong className="text-slate-300">Start step</strong> fusiona desde Hook Router o genera prompts de avatar (si está activado).
+      </div>
+
+      {generationRunning && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
+          Ejecutando paso… el editor puede quedar en solo lectura hasta que termine.
+        </div>
+      )}
+
+      {/* ── Avatar Section ─────────────────────────────────── */}
+      <div className="space-y-3 rounded-xl border border-slate-600 bg-gradient-to-r from-slate-800 to-slate-700 p-3">
+        <div className="flex items-center justify-between">
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-300">
+            Avatar del canal
+          </div>
+          <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
+            <input
+              type="checkbox"
+              checked={useAvatar}
+              disabled={generationRunning}
+              onChange={(e) => setUseAvatar(e.target.checked)}
+            />
+            Activar modo avatar
+          </label>
+        </div>
+
+        <p className="text-[11px] leading-snug text-slate-400">
+          Cuando está activado, el pipeline genera <strong className="text-slate-300">un prompt por imagen</strong>, describiendo
+          al avatar en la situación correspondiente a cada segmento de la narración.
+        </p>
+
+        {/* Selector de avatar */}
+        <div className="space-y-2">
+          <div className="flex items-end gap-2">
+            <div className="flex-1">
+              <Label>Avatar seleccionado</Label>
+              <Select
+                value={selectedAvatarId}
+                disabled={generationRunning}
+                onChange={(e) => setSelectedAvatarId(e.target.value)}
+              >
+                <option value="">— Descripción manual —</option>
+                {avatarList.map((av) => (
+                  <option key={av.id} value={av.id}>
+                    {av.bundled ? "★ " : ""}{av.name}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <Btn
+              type="button"
+              className="shrink-0 bg-violet-600 text-white hover:bg-violet-700"
+              disabled={generationRunning}
+              onClick={openNewAvatarEditor}
+            >
+              + Nuevo avatar
+            </Btn>
+            {selectedAvatarFull && !selectedAvatarFull.bundled && (
+              <>
+                <Btn
+                  type="button"
+                  className="shrink-0 bg-white text-violet-800 ring-1 ring-violet-300 hover:bg-violet-50"
+                  disabled={generationRunning}
+                  onClick={() => openEditAvatarEditor(selectedAvatarFull)}
+                >
+                  Editar
+                </Btn>
+                <Btn
+                  type="button"
+                  className="shrink-0 bg-white text-red-700 ring-1 ring-red-200 hover:bg-red-50"
+                  disabled={generationRunning}
+                  onClick={() => void deleteSelectedAvatar()}
+                >
+                  Borrar
+                </Btn>
+              </>
+            )}
+          </div>
+
+          {/* Descripción del avatar seleccionado */}
+          {selectedAvatarFull ? (
+            <div className="rounded-lg border border-violet-100 bg-white px-3 py-2 text-[11px] text-violet-900 space-y-1">
+              <div className="font-semibold">{selectedAvatarFull.name}</div>
+              <div className="leading-snug text-violet-700">{selectedAvatarFull.description}</div>
+              {selectedAvatarFull.expressions.length > 0 && (
+                <div className="flex flex-wrap gap-1 pt-0.5">
+                  {selectedAvatarFull.expressions.map((e) => (
+                    <span key={e} className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-mono text-violet-800">
+                      {e}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {selectedAvatarFull.style_notes && (
+                <div className="text-violet-500 italic">{selectedAvatarFull.style_notes}</div>
+              )}
+              <div className={`flex items-center gap-1.5 pt-0.5 ${selectedAvatarFull.intro_enabled ? "text-violet-800" : "text-violet-400"}`}>
+                <span className={`inline-block h-2 w-2 rounded-full ${selectedAvatarFull.intro_enabled ? "bg-violet-500" : "bg-slate-300"}`} />
+                {selectedAvatarFull.intro_enabled
+                  ? <>Coletilla de <strong>presentación</strong> activa — personaje: <strong>{selectedAvatarFull.intro_character_name}</strong></>
+                  : "Coletilla de presentación desactivada"}
+              </div>
+              <div className={`flex items-center gap-1.5 ${selectedAvatarFull.outro_enabled ? "text-violet-800" : "text-violet-400"}`}>
+                <span className={`inline-block h-2 w-2 rounded-full ${selectedAvatarFull.outro_enabled ? "bg-violet-500" : "bg-slate-300"}`} />
+                {selectedAvatarFull.outro_enabled
+                  ? <>Coletilla de <strong>cierre</strong> activa — personaje: <strong>{selectedAvatarFull.outro_character_name}</strong></>
+                  : "Coletilla de cierre desactivada"}
+              </div>
+            </div>
+          ) : (
+            /* Descripción manual si no hay avatar del store */
+            <div>
+              <Label>Descripción manual del avatar (para el prompt IA)</Label>
+              <TextArea
+                value={AVATAR_DEFAULT_DESCRIPTION}
+                disabled
+                className="min-h-[52px] text-xs opacity-60"
+              />
+              <div className="mt-0.5 text-[10px] text-violet-600">
+                Selecciona un avatar del desplegable o crea uno nuevo para editarlo.
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Ritmo */}
+        <div className="grid gap-2 sm:grid-cols-2">
+          <div>
+            <Label>Segundos de narración por imagen</Label>
+            <input
+              type="number" min={2} max={30} step={0.5}
+              value={avatarSecsPerImage}
+              disabled={generationRunning}
+              onChange={(e) => setAvatarSecsPerImage(parseFloat(e.target.value) || 6)}
+              className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-violet-400"
+            />
+            {estimatedLabel && (
+              <div className="mt-0.5 text-[10px] text-violet-700">{estimatedLabel}</div>
+            )}
+          </div>
+          <div>
+            <Label>Máximo de imágenes</Label>
+            <input
+              type="number" min={1} max={300} step={1}
+              value={avatarMaxImages}
+              disabled={generationRunning}
+              onChange={(e) => setAvatarMaxImages(parseInt(e.target.value, 10) || 80)}
+              className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-violet-400"
+            />
+            <div className="mt-0.5 text-[10px] text-violet-700">
+              Limita las llamadas a la API de generación de imágenes.
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Btn
+            type="button"
+            className="bg-violet-700 text-white hover:bg-violet-800 disabled:opacity-40"
+            disabled={generationRunning || !useAvatar}
+            onClick={() =>
+              run("Guardar ajustes + Generar prompts con Avatar", async () => {
+                await saveSettings();
+                await postJson("/api/pipeline/avatar-prompts/generate", { work: workApplied });
+                await refreshPipeline();
+              })
+            }
+          >
+            Generar prompts con Avatar
+          </Btn>
+          {!useAvatar && (
+            <span className="text-[11px] text-violet-600">Activa el modo avatar para usar este botón.</span>
+          )}
+          {estimatedPrompts !== null && (
+            <span className="text-[11px] text-violet-800">
+              Bundle actual: <strong>{estimatedPrompts}</strong> prompts
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* ── Avatar Editor (inline) ──────────────────────────── */}
+      {showAvatarEditor && (
+        <div className="rounded-xl border border-violet-300 bg-violet-50 p-3 space-y-3 shadow-sm">
+          <div className="text-xs font-semibold text-violet-900">
+            {editingAvatarId ? "Editar avatar" : "Nuevo avatar"}
+          </div>
+          <div>
+            <Label>Nombre</Label>
+            <Input
+              value={editorName}
+              onChange={(e) => setEditorName(e.target.value)}
+              placeholder="Ej.: Nerd Boy versión femenina, Robot presentador…"
+            />
+          </div>
+          <div>
+            <Label>Descripción para el prompt IA</Label>
+            <TextArea
+              value={editorDescription}
+              onChange={(e) => setEditorDescription(e.target.value)}
+              className="min-h-[80px] text-xs"
+              placeholder="Describe el avatar tal como quieres que aparezca en cada imagen…"
+            />
+            <div className="mt-0.5 text-[10px] text-violet-600">
+              Incluye rasgos físicos, ropa, estilo de ilustración y color de contorno.
+            </div>
+          </div>
+          <div>
+            <Label>Notas de estilo (opcional)</Label>
+            <Input
+              value={editorStyleNotes}
+              onChange={(e) => setEditorStyleNotes(e.target.value)}
+              placeholder="Ej.: fondo siempre blanco, sin sombras…"
+            />
+          </div>
+
+          {/* Coletilla de presentación */}
+          <div className="rounded-lg border border-violet-200 bg-violet-50/80 p-2.5 space-y-2">
+            <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-violet-900">
+              <input
+                type="checkbox"
+                checked={editorIntroEnabled}
+                onChange={(e) => setEditorIntroEnabled(e.target.checked)}
+              />
+              Activar coletilla de <strong>presentación</strong> (tras el hook)
+            </label>
+            <p className="text-[10px] leading-snug text-violet-700">
+              Genera 1 imagen donde el personaje se presenta y adelanta el tema,{" "}
+              justo después del gancho.
+            </p>
+            {editorIntroEnabled && (
+              <div>
+                <Label>Nombre del personaje</Label>
+                <Input
+                  value={editorIntroCharacterName}
+                  onChange={(e) => setEditorIntroCharacterName(e.target.value)}
+                  placeholder={`Por defecto: "${editorName || "nombre del avatar"}"`}
+                />
+                <div className="mt-0.5 text-[10px] text-violet-600">
+                  Ej.: "Nerd", "Alex". El LLM usará este nombre en el texto generado.
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Coletilla de cierre */}
+          <div className="rounded-lg border border-violet-200 bg-violet-50/80 p-2.5 space-y-2">
+            <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-violet-900">
+              <input
+                type="checkbox"
+                checked={editorOutroEnabled}
+                onChange={(e) => setEditorOutroEnabled(e.target.checked)}
+              />
+              Activar coletilla de <strong>cierre</strong> (suscripción + like)
+            </label>
+            <p className="text-[10px] leading-snug text-violet-700">
+              Genera 1 imagen al final del vídeo donde el personaje pide suscripción y like
+              de forma natural y cercana.
+            </p>
+            {editorOutroEnabled && (
+              <div>
+                <Label>Nombre del personaje</Label>
+                <Input
+                  value={editorOutroCharacterName}
+                  onChange={(e) => setEditorOutroCharacterName(e.target.value)}
+                  placeholder={`Por defecto: "${editorName || "nombre del avatar"}"`}
+                />
+                <div className="mt-0.5 text-[10px] text-violet-600">
+                  Ej.: "Nerd", "Alex". El LLM generará la frase de cierre con este nombre.
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="flex gap-2">
+            <Btn
+              type="button"
+              className="bg-violet-700 text-white hover:bg-violet-800"
+              onClick={() => run("Guardar avatar", saveAvatarEditor)}
+            >
+              Guardar avatar
+            </Btn>
+            <Btn
+              type="button"
+              className="bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
+              onClick={() => setShowAvatarEditor(false)}
+            >
+              Cancelar
+            </Btn>
+          </div>
+        </div>
+      )}
+
+      {/* ── General Settings ───────────────────────────────── */}
+      <div className="space-y-3 rounded-xl border border-cyan-200 bg-cyan-50/70 p-3">
+        <div className="text-xs font-semibold uppercase tracking-wide text-cyan-950">
+          Configuración (persistida en pipeline)
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <Label>Generador objetivo</Label>
+            <Select
+              value={targetGenerator}
+              disabled={generationRunning}
+              onChange={(e) => setTargetGenerator(e.target.value as TargetGenerator)}
+            >
+              <option value="midjourney">Midjourney</option>
+              <option value="flux">Flux</option>
+              <option value="dall_e">DALL·E</option>
+              <option value="sd">Stable Diffusion / SDXL</option>
+              <option value="custom">Personalizado (solo JSON / export manual)</option>
+            </Select>
+          </div>
+          <div className="flex flex-col justify-end gap-2 text-xs text-cyan-950">
+            <label className="flex cursor-pointer items-center gap-2">
+              <input type="checkbox" checked={appendMjSuffix} disabled={generationRunning}
+                onChange={(e) => setAppendMjSuffix(e.target.checked)} />
+              Añadir sufijo Midjourney desde <code className="rounded bg-white px-1">global_style</code>
+            </label>
+            <label className="flex cursor-pointer items-center gap-2">
+              <input type="checkbox" checked={exportNegativeSeparate} disabled={generationRunning}
+                onChange={(e) => setExportNegativeSeparate(e.target.checked)} />
+              Exportar <code className="rounded bg-white px-1">negative_prompt</code> por separado (SD/Flux)
+            </label>
+          </div>
+        </div>
+        <div>
+          <Label>Notas internas</Label>
+          <Input value={settingsNotes} disabled={generationRunning}
+            onChange={(e) => setSettingsNotes(e.target.value)}
+            placeholder="Ej.: usar solo planos macro en Acto 3…" />
+        </div>
+        <Btn type="button" className="bg-cyan-800 text-white hover:bg-cyan-900" disabled={generationRunning}
+          onClick={() => run("Guardar ajustes Image Prompt Writer", saveSettings)}>
+          Guardar ajustes
+        </Btn>
+      </div>
+
+      <div className="rounded-xl border border-slate-600 bg-slate-800 p-3 text-xs text-slate-400">
+        <div className="font-semibold text-white">Estructura del JSON</div>
+        <ul className="mt-2 list-disc space-y-1 pl-4">
+          <li><code className="rounded bg-slate-700 px-1">version</code>, <code className="rounded bg-slate-700 px-1">source</code>, <code className="rounded bg-slate-700 px-1">global_style</code></li>
+          <li>
+            <code className="rounded bg-slate-700 px-1">prompts[]</code>: <code className="rounded bg-slate-700 px-1">id</code>, <code className="rounded bg-slate-700 px-1">act</code>, <code className="rounded bg-slate-700 px-1">expression</code>,{" "}
+            <code className="rounded bg-slate-700 px-1">situation</code>, <code className="rounded bg-slate-700 px-1">ai_prompt</code>, <code className="rounded bg-slate-700 px-1">negative_prompt</code>, <code className="rounded bg-slate-700 px-1">segment_text</code>
+          </li>
+          <li>Formato legacy: <code className="rounded bg-slate-700 px-1">role</code> + <code className="rounded bg-slate-700 px-1">text</code> (sigue siendo válido)</li>
+        </ul>
+      </div>
+
+      <div className="flex flex-wrap gap-2 rounded-xl border border-slate-600 bg-gradient-to-r from-slate-800 to-slate-700 px-3 py-2">
+        <Btn type="button" className="bg-white text-slate-900 hover:bg-slate-100 disabled:opacity-40"
+          disabled={generationRunning}
+          onClick={() => run("Hook Router → image_prompts", async () => {
+            await postJson("/api/pipeline/hook-router/push-to-image-prompts", { work: workApplied });
+            await loadBundle(); await refreshPipeline();
+          })}>
+          Fusionar desde Hook Scene Router
+        </Btn>
+        <Btn type="button" className="border border-slate-500 bg-slate-700 text-slate-200 hover:bg-slate-600 disabled:opacity-40"
+          disabled={generationRunning}
+          onClick={() => run("Metadata miniaturas → image_prompts", async () => {
+            await postJson("/api/pipeline/metadata/push-thumbnails-to-images", { work: workApplied });
+            await loadBundle(); await refreshPipeline();
+          })}>
+          Reemplazar por ideas de miniatura (Metadata)
+        </Btn>
+      </div>
+
+      {/* ── Prompt editor: Cards / JSON ──────────────────────── */}
+      {(() => {
+        // Parse prompts from jsonText for card view
+        let parsedBundle: Record<string, unknown> | null = null;
+        let parsedPrompts: PromptItem[] = [];
+        try {
+          const b = JSON.parse(jsonText) as Record<string, unknown>;
+          parsedBundle = b;
+          if (Array.isArray(b.prompts)) parsedPrompts = b.prompts as PromptItem[];
+        } catch { /* invalid json */ }
+
+        const updatePromptAt = (index: number, updated: PromptItem) => {
+          if (!parsedBundle) return;
+          const newPrompts = [...parsedPrompts];
+          newPrompts[index] = updated;
+          const newBundle = { ...parsedBundle, prompts: newPrompts };
+          setJsonText(JSON.stringify(newBundle, null, 2));
+          setExpandedId(null);
+        };
+
+        return (
+          <div className="space-y-2">
+            {/* Toolbar */}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1">
+                <span className="text-xs font-medium text-slate-600">
+                  pipeline/image_prompts.json
+                </span>
+                {parsedPrompts.length > 0 && (
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
+                    {parsedPrompts.length} prompts
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-1.5">
+                <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs">
+                  <button
+                    type="button"
+                    className={`px-2.5 py-1 transition-colors ${viewMode === "cards" ? "bg-slate-900 text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}
+                    onClick={() => setViewMode("cards")}
+                  >
+                    Tarjetas
+                  </button>
+                  <button
+                    type="button"
+                    className={`px-2.5 py-1 transition-colors ${viewMode === "json" ? "bg-slate-900 text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}
+                    onClick={() => setViewMode("json")}
+                  >
+                    JSON
+                  </button>
+                </div>
+                <Btn type="button" className="bg-white text-slate-900 ring-1 ring-slate-200 hover:bg-slate-50"
+                  onClick={() => void loadBundle()}>
+                  Recargar
+                </Btn>
+                <Btn type="button" className="bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-40"
+                  disabled={generationRunning || !jsonText.trim()}
+                  onClick={() => run("Guardar image_prompts.json", saveBundle)}>
+                  Guardar y marcar listo
+                </Btn>
+              </div>
+            </div>
+
+            {/* Card view */}
+            {viewMode === "cards" && (
+              parsedPrompts.length > 0 ? (
+                <div className="space-y-1 max-h-[620px] overflow-y-auto rounded-xl border border-slate-600 bg-slate-800 p-2">
+                  {parsedPrompts.map((item, i) => {
+                    const cardKey = item.id != null ? String(item.id) : String(i);
+                    return (
+                      <PromptCard
+                        key={cardKey}
+                        item={item}
+                        index={i}
+                        expanded={expandedId === cardKey}
+                        onToggle={() => setExpandedId(expandedId === cardKey ? null : cardKey)}
+                        onSave={(updated) => updatePromptAt(i, updated)}
+                        readOnly={generationRunning}
+                      />
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-slate-600 bg-slate-700/30 px-4 py-6 text-center text-xs text-slate-500">
+                  {hasBundle
+                    ? "El bundle no contiene prompts en el array esperado."
+                    : "Aún no hay bundle. Ejecuta «Start step», genera prompts de Avatar, o fusiona desde Hook Router / Metadata."}
+                </div>
+              )
+            )}
+
+            {/* JSON view */}
+            {viewMode === "json" && (
+              <TextArea
+                readOnly={generationRunning}
+                value={jsonText}
+                onChange={(e) => setJsonText(e.target.value)}
+                spellCheck={false}
+                className="min-h-[380px] font-mono text-xs"
+                placeholder={hasBundle ? "" : "Aún no hay bundle."}
+              />
+            )}
+          </div>
+        );
+      })()}
+    </div>
+  );
+}

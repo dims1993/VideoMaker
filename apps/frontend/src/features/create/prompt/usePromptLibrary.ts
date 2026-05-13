@@ -35,48 +35,6 @@ export function usePromptLibrary() {
     }
   }, []);
 
-  const applyTemplateFromApi = useCallback(async (id: string) => {
-    if (!id) return;
-    const r = await fetch(`/api/prompt-templates/${encodeURIComponent(id)}`);
-    if (!r.ok) return;
-    const t = (await r.json()) as {
-      name?: string;
-      hook_style?: string;
-      visual_style?: string;
-      tone?: string;
-      system_instructions?: string;
-      user_instructions?: string;
-      params_json?: Record<string, unknown>;
-    };
-    setPromptName(t.name || "");
-    setPromptHookStyle(t.hook_style || "");
-    setPromptVisualStyle(t.visual_style || "");
-    setPromptTone(t.tone || "");
-    setPromptSystem(t.system_instructions || "");
-    setPromptUser(t.user_instructions || "");
-    const pj = (t.params_json || {}) as {
-      target_audience?: string;
-      language_context?: { code?: string; slang_level?: string };
-      narrative_structure?: {
-        tone?: string;
-        hook_type?: string;
-        cta_type?: string;
-      };
-      visual_identity?: { style?: string; aspect_ratio?: string };
-      key_points?: string[];
-    };
-    setPromptTargetAudience(pj.target_audience || "");
-    setPromptLangCode(pj.language_context?.code || "es-ES");
-    const sl = pj.language_context?.slang_level;
-    setPromptSlangLevel(sl === "medium" || sl === "high" ? sl : "low");
-    setPromptNarrTone(pj.narrative_structure?.tone || "");
-    setPromptHookType(pj.narrative_structure?.hook_type || "");
-    setPromptCtaType(pj.narrative_structure?.cta_type || "");
-    setPromptAspectRatio(pj.visual_identity?.aspect_ratio || "9:16");
-    setPromptVisualStyle2(pj.visual_identity?.style || "");
-    setPromptKeyPoints(Array.isArray(pj.key_points) ? pj.key_points.join(", ") : "");
-  }, []);
-
   const buildPayload = useCallback(() => {
     return {
       name: promptName,
@@ -118,13 +76,15 @@ export function usePromptLibrary() {
     promptKeyPoints,
   ]);
 
-  const saveTemplate = useCallback(async () => {
+  const saveTemplate = useCallback(async (): Promise<string> => {
     const base = buildPayload();
     const nameForApi =
       (base.name || "").trim() || (promptTopic || "").trim() || "Plantilla sin nombre";
     const payload = { ...base, name: nameForApi };
     if (promptTemplateId) {
       await putJson(`/api/prompt-templates/${encodeURIComponent(promptTemplateId)}`, payload);
+      await loadPromptTemplates();
+      return promptTemplateId;
     } else {
       const res = await postJson<{ ok?: boolean; template?: { id?: string | number } }>(`/api/prompt-templates`, payload);
       const rawId = res?.template?.id;
@@ -135,9 +95,72 @@ export function usePromptLibrary() {
           setPromptName(nameForApi);
         }
       }
+      await loadPromptTemplates();
+      return id;
     }
-    await loadPromptTemplates();
   }, [buildPayload, promptTemplateId, loadPromptTemplates, promptName, promptTopic]);
+
+  const clearTemplate = useCallback(() => {
+    setPromptTemplateId("");
+    setPromptName("");
+    setPromptHookStyle("");
+    setPromptVisualStyle("");
+    setPromptTone("");
+    setPromptSystem("");
+    setPromptUser("");
+    setPromptTopic("");
+    setPromptTargetAudience("");
+    setPromptLangCode("es-ES");
+    setPromptSlangLevel("low");
+    setPromptNarrTone("");
+    setPromptHookType("");
+    setPromptCtaType("");
+    setPromptAspectRatio("9:16");
+    setPromptVisualStyle2("");
+    setPromptKeyPoints("");
+  }, []);
+
+  const applyTemplateFields = useCallback((t: {
+    name?: string;
+    hook_style?: string;
+    visual_style?: string;
+    tone?: string;
+    system_instructions?: string;
+    user_instructions?: string;
+    params_json?: Record<string, unknown>;
+  }) => {
+    setPromptName(t.name || "");
+    setPromptHookStyle(t.hook_style || "");
+    setPromptVisualStyle(t.visual_style || "");
+    setPromptTone(t.tone || "");
+    setPromptSystem(t.system_instructions || "");
+    setPromptUser(t.user_instructions || "");
+    const pj = (t.params_json || {}) as {
+      target_audience?: string;
+      language_context?: { code?: string; slang_level?: string };
+      narrative_structure?: { tone?: string; hook_type?: string; cta_type?: string };
+      visual_identity?: { style?: string; aspect_ratio?: string };
+      key_points?: string[];
+    };
+    setPromptTargetAudience(pj.target_audience || "");
+    setPromptLangCode(pj.language_context?.code || "es-ES");
+    const sl = pj.language_context?.slang_level;
+    setPromptSlangLevel(sl === "medium" || sl === "high" ? sl : "low");
+    setPromptNarrTone(pj.narrative_structure?.tone || "");
+    setPromptHookType(pj.narrative_structure?.hook_type || "");
+    setPromptCtaType(pj.narrative_structure?.cta_type || "");
+    setPromptAspectRatio(pj.visual_identity?.aspect_ratio || "9:16");
+    setPromptVisualStyle2(pj.visual_identity?.style || "");
+    setPromptKeyPoints(Array.isArray(pj.key_points) ? pj.key_points.join(", ") : "");
+  }, []);
+
+  const applyTemplateFromApi = useCallback(async (id: string) => {
+    if (!id) return;
+    const r = await fetch(`/api/prompt-templates/${encodeURIComponent(id)}`);
+    if (!r.ok) return;
+    const t = await r.json() as Parameters<typeof applyTemplateFields>[0];
+    applyTemplateFields(t);
+  }, [applyTemplateFields]);
 
   const deleteTemplate = useCallback(async () => {
     if (!promptTemplateId) return;
@@ -184,6 +207,8 @@ export function usePromptLibrary() {
     promptKeyPoints,
     setPromptKeyPoints,
     applyTemplateFromApi,
+    applyTemplateFields,
+    clearTemplate,
     saveTemplate,
     deleteTemplate,
   };

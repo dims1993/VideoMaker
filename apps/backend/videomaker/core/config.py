@@ -1,4 +1,4 @@
-"""Valores por defecto del generador (ritmo, capítulos, stock)."""
+"""Valores por defecto del generador (ritmo, capítulos, montaje)."""
 
 from pathlib import Path
 

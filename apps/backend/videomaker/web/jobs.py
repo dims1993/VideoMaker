@@ -7,13 +7,9 @@ import time
 import traceback
 from pathlib import Path
 
-from videomaker.audio.audio_concat import wav_duration_seconds
-from videomaker.stock.keyword_planner import plan_stock_keywords
 from videomaker.audio.narration import build_narration_wav
 from videomaker.video.render import render_draft_video
 from videomaker.llm.script_gen import generate_script
-from videomaker.stock.stock_download import download_stock_for_queries
-from videomaker.stock.stock_pexels import PexelsClient
 from videomaker.tts.voice_gen import synthesize_with_coqui
 from videomaker.youtube.youtube_analyze import (
     YoutubeAnalyzeInputs,
@@ -121,34 +117,12 @@ def run_speak_script(
         set_status(work_dir, state="error", step="tts", detail=str(e))
 
 
-def run_stock_fetch(work: str, *, lang: str, max_clips: int) -> None:
-    work_dir = safe_work_dir(work)
-    script_path = work_dir / "guion.txt"
-    if not script_path.is_file():
-        set_status(work_dir, state="error", step="stock", detail="No hay guion.txt")
-        return
-    script = script_path.read_text(encoding="utf-8")
-    narration = work_dir / "narracion.wav"
-    audio_s = None
-    if narration.is_file():
-        audio_s = wav_duration_seconds(narration)
-    try:
-        set_status(work_dir, state="running", step="stock", detail="Descargando stock (Pexels)…")
-        plan = plan_stock_keywords(script, audio_duration_s=audio_s, lang_hint=lang)
-        client = PexelsClient()
-        stock_dir = work_dir / "stock"
-        download_stock_for_queries(client, plan, stock_dir, max_downloads=int(max_clips))
-        set_status(work_dir, state="done", step="stock", detail="Stock listo.")
-    except Exception as e:
-        set_status(work_dir, state="error", step="stock", detail=str(e))
-
-
 def run_render_draft(work: str, *, no_music: bool) -> None:
     work_dir = safe_work_dir(work)
     narr = work_dir / "narracion.wav"
     stock_dir = work_dir / "stock"
-    if not narr.is_file() or not stock_dir.is_dir():
-        set_status(work_dir, state="error", step="render", detail="Falta narracion.wav o carpeta stock/")
+    if not narr.is_file():
+        set_status(work_dir, state="error", step="render", detail="Falta narracion.wav")
         return
     try:
         set_status(work_dir, state="running", step="render", detail="Renderizando vídeo (MoviePy)…")
@@ -156,7 +130,9 @@ def run_render_draft(work: str, *, no_music: bool) -> None:
             narr,
             stock_dir,
             work_dir / "draft.mp4",
+            work_dir=work_dir,
             pick_music_from_project=not bool(no_music),
+            render_no_music=bool(no_music),
         )
         set_status(work_dir, state="done", step="render", detail="Vídeo listo.")
     except Exception as e:
@@ -438,12 +414,14 @@ def run_create_pipeline(
     prompt_topic: str | None = None,
     script_writer_template_id: str | None = None,
     script_fragment_index: int | None = None,
+    render_no_music: bool | None = None,
 ) -> None:
     work_dir = safe_work_dir(work)
     work_dir.mkdir(parents=True, exist_ok=True)
     tid = (prompt_template_id or "").strip() or None
     sw_tid = (script_writer_template_id or "").strip() or None
     pt = "" if prompt_topic is None else str(prompt_topic).strip()
+    rnm = False if render_no_music is None else bool(render_no_music)
     inputs = PipelineInputs(
         keywords=keywords,
         context=context,
@@ -455,5 +433,6 @@ def run_create_pipeline(
         prompt_topic=pt,
         script_writer_template_id=sw_tid,
         script_fragment_index=script_fragment_index,
+        render_no_music=rnm,
     )
     run_pipeline(work_dir, inputs, rerun_step_id=step_id)

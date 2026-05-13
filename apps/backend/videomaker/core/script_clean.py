@@ -62,6 +62,31 @@ def _strip_inline_category_markers(line: str) -> str:
     return re.sub(r"\s*\[CATEGORIA:[^\]]*\]", "", line, flags=re.IGNORECASE)
 
 
+# Prefijos de dirección de voz al inicio de línea: **Voz**: / Voz: / **Narrador**: etc.
+_VOZ_PREFIX = re.compile(
+    r"(?:^\s*\*\*)?(?:Voz|Narrador|Presentador|Host|VO|Locutor|Voz en off|Narración)(?:\*\*)?"
+    r"\s*[:\-]\s*",
+    re.IGNORECASE,
+)
+
+
+def _strip_voice_prefixes(text: str) -> str:
+    """Elimina prefijos de dirección de voz al inicio de cada línea (e.g. '**Voz**: texto')."""
+    lines_out: list[str] = []
+    for line in text.splitlines():
+        # Solo actúa si el prefijo está al inicio de la línea (con espacios opcionales)
+        stripped = line.lstrip()
+        m = _VOZ_PREFIX.match(stripped)
+        if m:
+            remainder = stripped[m.end():].strip()
+            if remainder:
+                lines_out.append(remainder)
+            # Si tras quitar el prefijo no queda nada, omitimos la línea
+        else:
+            lines_out.append(line)
+    return "\n".join(lines_out)
+
+
 def _should_skip_meta_line(stripped: str) -> bool:
     if not stripped:
         return False
@@ -81,7 +106,7 @@ def _should_skip_meta_line(stripped: str) -> bool:
         return True
     if re.match(r"^outline\s*:", s, re.IGNORECASE):
         return True
-    if re.match(r"^(tags?\s+para\s+stock|keywords?\s*(pexels)?|b[- ]?roll\s+tags?)\b", s, re.IGNORECASE):
+    if re.match(r"^(tags?\s+para\s+stock|keywords?\s+para\s+stock|referencia\s+visual|b[- ]?roll\s+tags?)\b", s, re.IGNORECASE):
         return True
     if _TIME_ONLY.match(s):
         return True
@@ -100,7 +125,7 @@ def _should_skip_meta_line(stripped: str) -> bool:
 
 def _strip_trailing_stock_tags(text: str) -> str:
     """
-    Quita el último párrafo si parece la línea de keywords para Pexels
+    Quita el último párrafo si parece la línea de keywords de referencia visual
     (muchas comas, tokens cortos, sin narrativa larga).
     """
     stripped = text.strip()
@@ -128,7 +153,7 @@ def _strip_trailing_stock_tags(text: str) -> str:
 def text_for_tts(full_script: str) -> str:
     """
     Deja solo texto apto para VO: sin OUTLINE, sin [CATEGORIA:…],
-    sin encabezados de sección ni la línea final de tags de stock.
+    sin encabezados de sección ni la línea final de keywords de referencia visual.
     """
     text = full_script.replace("\r\n", "\n")
     text = _cut_before_guion_header(text)
@@ -147,7 +172,9 @@ def text_for_tts(full_script: str) -> str:
         lines_out.append(line)
 
     text = "\n".join(lines_out)
+    text = _strip_voice_prefixes(text)          # quita **Voz**: / Voz: antes y después del bold
     text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    text = _strip_voice_prefixes(text)          # segunda pasada por si quedó "Voz:" sin bold
     text = _strip_square_bracket_tags(text)
     text = _strip_trailing_stock_tags(text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()

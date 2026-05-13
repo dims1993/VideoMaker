@@ -65,8 +65,8 @@ class ScriptSegment:
 
 
 @dataclass
-class StockQuery:
-    """Una búsqueda concreta en Pexels (u otro proveedor)."""
+class VisualReferenceQuery:
+    """Término de referencia visual alineado a un tramo de la narración (montaje / IA)."""
 
     query: str
     start_audio_s: float
@@ -78,7 +78,7 @@ class RenderPlan:
     """Plan mínimo que consume el editor de vídeo."""
 
     audio_path: Path
-    stock_queries: list[StockQuery]
+    reference_queries: list[VisualReferenceQuery]
     locale: Locale
     chapter_titles: list[tuple[float, str]]  # (t_s, título corto)
     music_path: Path | None

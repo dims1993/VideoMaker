@@ -6,12 +6,13 @@ Persistencia por sesión en `work_dir/pipeline_manifest.json` y artefactos en `w
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from videomaker.core.models import ScriptBlueprint
 from videomaker.core.script_bundle import write_script_bundle
@@ -49,6 +50,9 @@ from videomaker.web.io_util import parse_locale, set_status, voice_profile_for_w
 from .models import PIPELINE_STEPS, PipelineInputs, PipelineState, PipelineStatus
 
 _LOCK = threading.Lock()
+_LOG = logging.getLogger(__name__)
+# _set_pipeline_state: distingue «no actualizar last_error» de «borrar last_error» (None).
+_PIPELINE_LAST_ERROR_OMIT = object()
 
 
 def _manifest_path(work_dir: Path) -> Path:
@@ -105,6 +109,7 @@ def _expected_artifact_paths(work_dir: Path) -> dict[str, Path]:
         "image_prompt_writer": d / "image_prompts.json",
         "images_generation": d / "images_generation.json",
         "voiceovers_generation": d / "voiceovers.json",
+        "render_draft": work_dir / "draft.mp4",
     }
 
 
@@ -158,10 +163,28 @@ def read_pipeline_state(work_dir: Path) -> PipelineState:
     try:
         raw = json.loads(p.read_text(encoding="utf-8"))
         if isinstance(raw, dict) and isinstance(raw.get("steps"), list):
+            raw = _merge_pipeline_step_defs(raw)
             return _reconcile_state_with_artifacts(work_dir, raw)  # type: ignore[return-value]
     except Exception:
         pass
     return _default_state()
+
+
+def _merge_pipeline_step_defs(raw: dict[str, Any]) -> dict[str, Any]:
+    """Añade pasos nuevos de PIPELINE_STEPS sin perder estado de los existentes (migración suave)."""
+    old = [s for s in raw.get("steps", []) if isinstance(s, dict) and s.get("id")]
+    by_id = {str(s["id"]): s for s in old}
+    merged: list[dict[str, Any]] = []
+    for sid, title in PIPELINE_STEPS:
+        prev = by_id.get(sid)
+        if prev:
+            if prev.get("title") != title:
+                prev = {**prev, "title": title}
+            merged.append(prev)
+        else:
+            merged.append({"id": sid, "title": title, "state": "idle", "detail": "", "updated_at": ""})
+    raw["steps"] = merged
+    return raw
 
 
 def write_pipeline_state(work_dir: Path, state: PipelineState) -> None:
@@ -186,12 +209,18 @@ def _set_step(work_dir: Path, step_id: str, *, state: PipelineStatus, detail: st
     return st
 
 
-def _set_pipeline_state(work_dir: Path, *, state: PipelineStatus, current_step: str | None = None, last_error: str | None = None) -> None:
+def _set_pipeline_state(
+    work_dir: Path,
+    *,
+    state: PipelineStatus,
+    current_step: str | None = None,
+    last_error: str | None | object = _PIPELINE_LAST_ERROR_OMIT,
+) -> None:
     st = read_pipeline_state(work_dir)
     st["state"] = state
     st["current_step"] = current_step
-    if last_error is not None:
-        st["last_error"] = last_error
+    if last_error is not _PIPELINE_LAST_ERROR_OMIT:
+        st["last_error"] = last_error  # None borra el mensaje rojo en la UI tras un rerun OK
     write_pipeline_state(work_dir, st)
 
 
@@ -199,6 +228,23 @@ def _pipeline_dir(work_dir: Path) -> Path:
     d = work_dir / "pipeline"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _load_script_text(work_dir: Path, script_path: Path | None) -> str:
+    """Texto del guion para pasos posteriores al Script Writer (rerun solo metadata, etc.)."""
+    if script_path is not None and script_path.is_file():
+        t = script_path.read_text(encoding="utf-8")
+        if t.strip():
+            return t
+    guion = work_dir / "guion.txt"
+    if guion.is_file():
+        t = guion.read_text(encoding="utf-8")
+        if t.strip():
+            return t
+    pipe = work_dir / "pipeline" / "script.txt"
+    if pipe.is_file():
+        return pipe.read_text(encoding="utf-8")
+    return ""
 
 
 def _write_json(path: Path, data: Any) -> None:
@@ -258,6 +304,7 @@ def _merged_inputs_for_script(work_dir: Path, inputs: PipelineInputs) -> Pipelin
         prompt_topic=topic,
         script_writer_template_id=sw_tid,
         script_fragment_index=inputs.script_fragment_index,
+        render_no_music=inputs.render_no_music,
     )
 
 
@@ -600,7 +647,7 @@ def _run_step_script_writer(work_dir: Path, inputs: PipelineInputs) -> Path:
 
     out = _pipeline_dir(work_dir) / "script.txt"
     out.write_text(text, encoding="utf-8")
-    # Raíz de sesión: editor legacy, TTS/stock y `/api/script`.
+    # Raíz de sesión: editor legacy, TTS y `/api/script`.
     guion = work_dir / "guion.txt"
     guion.write_text(text, encoding="utf-8")
     write_script_bundle(work_dir, text)
@@ -608,21 +655,157 @@ def _run_step_script_writer(work_dir: Path, inputs: PipelineInputs) -> Path:
     return out
 
 
-def _run_step_metadata(work_dir: Path, script_text: str) -> None:
-    # Placeholder: en una iteración posterior esto derivará metadata estructurada vía LLM.
+def _run_step_metadata(work_dir: Path, inputs: PipelineInputs, script_text: str) -> None:
+    from videomaker.core.metadata_settings_store import read_metadata_settings
+    from videomaker.llm.metadata_gen import generate_video_metadata, wrap_metadata_bundle
+
+    st = read_metadata_settings(work_dir)
+    tp = str(st.get("target_platform") or "youtube").strip().lower()
+    if tp not in ("youtube", "tiktok", "reels"):
+        tp = "youtube"
+    tk = str(st.get("target_keywords") or "").strip()
+    sys_ov = str(st.get("system_prompt") or "").strip() or None
+
+    inner = generate_video_metadata(
+        script_text=script_text,
+        keywords=inputs.keywords,
+        context=inputs.context,
+        lang=inputs.lang,
+        provider=(inputs.provider or "").strip() or None,
+        model=(inputs.model or "").strip() or None,
+        target_platform=tp,
+        target_keywords=tk,
+        system_prompt_override=sys_ov,
+        minutes_session=float(inputs.minutes) if inputs.minutes and inputs.minutes > 0 else None,
+    )
     out = _pipeline_dir(work_dir) / "metadata.json"
-    _write_json(out, {"notes": "placeholder", "chars": len(script_text)})
+    _write_json(out, wrap_metadata_bundle(inner))
 
 
-def _run_step_scene_router(work_dir: Path, *, step_id: str, script_text: str) -> None:
-    # Placeholder: usa B-ROLL tags como “cambios” y produce una lista simple.
-    out = _pipeline_dir(work_dir) / f"{step_id}.json"
-    _write_json(out, {"notes": "placeholder", "has_broll": "[B-ROLL" in script_text})
+def push_thumbnail_ideas_to_image_prompts(work_dir: Path) -> dict[str, Any]:
+    """
+    Copia `editorial.thumbnail_ideas` de metadata.json → image_prompts.json para el paso de imágenes.
+    """
+    from videomaker.core.metadata_settings_store import read_metadata_settings
 
+    meta_p = _pipeline_dir(work_dir) / "metadata.json"
+    if not meta_p.is_file():
+        raise ValueError("No existe pipeline/metadata.json. Genera metadata antes.")
+    try:
+        md = json.loads(meta_p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise ValueError(f"metadata.json no es JSON válido: {e}") from e
+    ed = md.get("editorial") if isinstance(md, dict) else None
+    thumbs = ed.get("thumbnail_ideas") if isinstance(ed, dict) else None
+    if not isinstance(thumbs, list):
+        thumbs = []
+    prompts: list[dict[str, Any]] = []
+    for i, t in enumerate(thumbs):
+        s = str(t).strip()
+        if s:
+            prompts.append({"role": "thumbnail", "index": i, "text": s})
 
-def _run_step_image_prompt_writer(work_dir: Path) -> None:
+    if not prompts:
+        raise ValueError(
+            "No hay ideas en editorial.thumbnail_ideas. Ejecuta el paso Metadata o añádelas en el JSON."
+        )
+
+    settings = read_metadata_settings(work_dir)
+    tp = str(settings.get("target_platform") or "youtube").strip().lower()
+    if tp not in ("youtube", "tiktok", "reels"):
+        tp = "youtube"
+
+    bundle = {
+        "version": 1,
+        "source": "metadata_thumbnails",
+        "target_platform": tp,
+        "prompts": prompts,
+    }
     out = _pipeline_dir(work_dir) / "image_prompts.json"
-    _write_json(out, {"notes": "placeholder", "prompts": []})
+    _write_json(out, bundle)
+    return {"count": len(prompts), "path": "pipeline/image_prompts.json"}
+
+
+def _run_step_scene_router(
+    work_dir: Path, *, step_id: str, script_text: str, inputs: PipelineInputs
+) -> None:
+    if step_id == "hook_scene_router":
+        from videomaker.llm.hook_scene_router import run_hook_scene_router_step
+
+        run_hook_scene_router_step(work_dir, script_text, inputs)
+        return
+    if step_id == "body_scene_router":
+        from videomaker.llm.body_scene_router import run_body_scene_router_step
+
+        run_body_scene_router_step(work_dir, script_text, inputs)
+        return
+    out = _pipeline_dir(work_dir) / f"{step_id}.json"
+    _write_json(
+        out,
+        {"version": 1, "notes": f"{step_id} (placeholder)", "has_broll": "[B-ROLL" in script_text},
+    )
+
+
+def _run_step_image_prompt_writer(work_dir: Path, inputs: PipelineInputs | None = None) -> None:
+    from videomaker.core.image_prompt_writer_settings_store import read_image_prompt_writer_settings
+
+    st = read_image_prompt_writer_settings(work_dir)
+    if st.get("use_avatar"):
+        from videomaker.llm.avatar_prompt_writer import (
+            AVATAR_DEFAULT_DESCRIPTION,
+            generate_avatar_image_prompts,
+        )
+
+        # Resolver descripción, intro y outro desde el store si hay avatar_id
+        resolved_desc = str(st.get("avatar_description") or AVATAR_DEFAULT_DESCRIPTION)
+        intro_enabled = False
+        intro_character_name = "Nerd"
+        outro_enabled = False
+        outro_character_name = "Nerd"
+        saved_avatar_id = str(st.get("avatar_id") or "").strip()
+        if saved_avatar_id:
+            try:
+                from videomaker.core.avatars_store import get_avatar
+                av = get_avatar(saved_avatar_id)
+                if av:
+                    resolved_desc = av["description"]
+                    intro_enabled = bool(av.get("intro_enabled", False))
+                    intro_character_name = str(av.get("intro_character_name") or av.get("name") or "Nerd")
+                    outro_enabled = bool(av.get("outro_enabled", False))
+                    outro_character_name = str(av.get("outro_character_name") or av.get("name") or "Nerd")
+            except Exception:
+                pass
+
+        generate_avatar_image_prompts(
+            work_dir,
+            avatar_description=resolved_desc,
+            intro_enabled=intro_enabled,
+            intro_character_name=intro_character_name,
+            outro_enabled=outro_enabled,
+            outro_character_name=outro_character_name,
+            secs_per_image=float(st.get("avatar_secs_per_image") or 6.0),
+            max_images=int(st.get("avatar_max_images") or 80),
+            target_generator=str(st.get("target_generator") or "midjourney"),
+            provider=(inputs.provider if inputs else None) or None,
+            model=(inputs.model if inputs else None) or None,
+        )
+        return
+
+    from videomaker.llm.hook_scene_router import merge_hook_router_into_image_prompts
+
+    try:
+        merge_hook_router_into_image_prompts(work_dir)
+    except ValueError:
+        out = _pipeline_dir(work_dir) / "image_prompts.json"
+        _write_json(
+            out,
+            {
+                "version": 1,
+                "source": "fallback",
+                "prompts": [],
+                "notes": "Ejecuta Hook Scene Router antes para generar prompts desde la ruta visual.",
+            },
+        )
 
 
 def _run_step_images_generation(work_dir: Path) -> None:
@@ -635,9 +818,29 @@ def _run_step_voiceovers_generation(work_dir: Path, inputs: PipelineInputs, scri
     out_wav, audio_s = build_narration_wav(
         script_text,
         voice_profile_for_work(work_dir, inputs.voice_preset),
-        _pipeline_dir(work_dir),
+        work_dir,
     )
     _write_json(_pipeline_dir(work_dir) / "voiceovers.json", {"wav": out_wav.name, "duration_s": audio_s})
+
+
+def _run_step_render_draft(work_dir: Path, inputs: PipelineInputs) -> None:
+    from videomaker.video.render import render_draft_video
+
+    narr = work_dir / "narracion.wav"
+    stock_dir = work_dir / "stock"
+    if not narr.is_file():
+        raise RuntimeError(
+            "Falta narracion.wav. Ejecuta Voiceovers Generation (o copia una narración a narracion.wav)."
+        )
+    out_mp4 = work_dir / "draft.mp4"
+    render_draft_video(
+        narr,
+        stock_dir,
+        out_mp4,
+        work_dir=work_dir,
+        pick_music_from_project=not bool(inputs.render_no_music),
+        render_no_music=bool(inputs.render_no_music),
+    )
 
 
 def run_pipeline(work_dir: Path, inputs: PipelineInputs, *, rerun_step_id: str | None = None) -> None:
@@ -672,16 +875,22 @@ def run_pipeline(work_dir: Path, inputs: PipelineInputs, *, rerun_step_id: str |
             elif sid == "script_writer":
                 script_path = _run_step_script_writer(work_dir, inputs)
             elif sid == "metadata":
-                txt = (script_path.read_text(encoding="utf-8") if script_path else "")
-                _run_step_metadata(work_dir, txt)
+                txt = _load_script_text(work_dir, script_path)
+                if not txt.strip():
+                    raise RuntimeError("No hay guion (guion.txt / pipeline/script.txt). Ejecuta Script Writer o importa un guion.")
+                _run_step_metadata(work_dir, inputs, txt)
             elif sid == "hook_scene_router":
-                txt = (script_path.read_text(encoding="utf-8") if script_path else "")
-                _run_step_scene_router(work_dir, step_id="hook_scene_router", script_text=txt)
+                txt = _load_script_text(work_dir, script_path)
+                _run_step_scene_router(
+                    work_dir, step_id="hook_scene_router", script_text=txt, inputs=inputs
+                )
             elif sid == "body_scene_router":
-                txt = (script_path.read_text(encoding="utf-8") if script_path else "")
-                _run_step_scene_router(work_dir, step_id="body_scene_router", script_text=txt)
+                txt = _load_script_text(work_dir, script_path)
+                _run_step_scene_router(
+                    work_dir, step_id="body_scene_router", script_text=txt, inputs=inputs
+                )
             elif sid == "image_prompt_writer":
-                _run_step_image_prompt_writer(work_dir)
+                _run_step_image_prompt_writer(work_dir, inputs)
             elif sid == "images_generation":
                 _run_step_images_generation(work_dir)
             elif sid == "voiceovers_generation":
@@ -690,6 +899,8 @@ def run_pipeline(work_dir: Path, inputs: PipelineInputs, *, rerun_step_id: str |
                 if not script_path.is_file():
                     raise RuntimeError("Falta script.txt para generar voiceovers.")
                 _run_step_voiceovers_generation(work_dir, inputs, script_path)
+            elif sid == "render_draft":
+                _run_step_render_draft(work_dir, inputs)
             else:
                 # forward-compat
                 pass
@@ -700,11 +911,111 @@ def run_pipeline(work_dir: Path, inputs: PipelineInputs, *, rerun_step_id: str |
                 break
 
         # Si fue rerun, respetamos estado global previo si estaba en error; para MVP lo dejamos done.
-        _set_pipeline_state(work_dir, state="done", current_step=None)
+        _set_pipeline_state(work_dir, state="done", current_step=None, last_error=None)
         set_status(work_dir, state="done", step="pipeline", detail="Pipeline lista.")
     except Exception as e:
         _set_step(work_dir, rerun_step_id or (read_pipeline_state(work_dir).get("current_step") or "pipeline"), state="error", detail=str(e))
         _set_pipeline_state(work_dir, state="error", current_step=None, last_error=str(e))
         set_status(work_dir, state="error", step="pipeline", detail=str(e))
-        raise
+        _LOG.exception("pipeline failed: %s", e)
+
+
+def save_manual_metadata_bundle(work_dir: Path, data: dict[str, Any]) -> None:
+    """Persistir `pipeline/metadata.json` desde la UI y marcar el paso como listo."""
+    if not isinstance(data, dict):
+        raise ValueError("metadata debe ser un objeto JSON")
+    out = _pipeline_dir(work_dir) / "metadata.json"
+    _write_json(out, data)
+    _set_step(work_dir, "metadata", state="done", detail="Guardado desde el editor.")
+    st = read_pipeline_state(work_dir)
+    gs_raw = st.get("state") or "idle"
+    gs = cast(
+        PipelineStatus,
+        gs_raw if gs_raw in ("idle", "running", "done", "error") else "idle",
+    )
+    _set_pipeline_state(work_dir, state=gs, current_step=None, last_error=None)
+
+
+def save_manual_image_prompts_bundle(work_dir: Path, data: dict[str, Any]) -> None:
+    """Persistir `pipeline/image_prompts.json` desde la UI y marcar el paso como listo."""
+    if not isinstance(data, dict):
+        raise ValueError("bundle debe ser un objeto JSON")
+    out = _pipeline_dir(work_dir) / "image_prompts.json"
+    _write_json(out, data)
+    _set_step(work_dir, "image_prompt_writer", state="done", detail="Guardado desde el editor.")
+    st = read_pipeline_state(work_dir)
+    gs_raw = st.get("state") or "idle"
+    gs = cast(
+        PipelineStatus,
+        gs_raw if gs_raw in ("idle", "running", "done", "error") else "idle",
+    )
+    _set_pipeline_state(work_dir, state=gs, current_step=None, last_error=None)
+
+
+def save_manual_body_router_bundle(work_dir: Path, data: dict[str, Any]) -> None:
+    """Persistir `pipeline/body_scene_router.json` desde la UI y marcar el paso como listo."""
+    if not isinstance(data, dict):
+        raise ValueError("artifact debe ser un objeto JSON")
+    out = _pipeline_dir(work_dir) / "body_scene_router.json"
+    _write_json(out, data)
+    _set_step(work_dir, "body_scene_router", state="done", detail="Guardado desde el editor.")
+    st = read_pipeline_state(work_dir)
+    gs_raw = st.get("state") or "idle"
+    gs = cast(
+        PipelineStatus,
+        gs_raw if gs_raw in ("idle", "running", "done", "error") else "idle",
+    )
+    _set_pipeline_state(work_dir, state=gs, current_step=None, last_error=None)
+
+
+def save_manual_hook_router_bundle(work_dir: Path, data: dict[str, Any]) -> None:
+    """Persistir `pipeline/hook_scene_router.json` desde la UI y marcar el paso como listo."""
+    if not isinstance(data, dict):
+        raise ValueError("artifact debe ser un objeto JSON")
+    out = _pipeline_dir(work_dir) / "hook_scene_router.json"
+    _write_json(out, data)
+    _set_step(work_dir, "hook_scene_router", state="done", detail="Guardado desde el editor.")
+    st = read_pipeline_state(work_dir)
+    gs_raw = st.get("state") or "idle"
+    gs = cast(
+        PipelineStatus,
+        gs_raw if gs_raw in ("idle", "running", "done", "error") else "idle",
+    )
+    _set_pipeline_state(work_dir, state=gs, current_step=None, last_error=None)
+
+
+def save_manual_images_generation_bundle(work_dir: Path, data: dict[str, Any]) -> None:
+    """Persistir `pipeline/images_generation.json` desde la UI y marcar el paso como listo."""
+    if not isinstance(data, dict):
+        raise ValueError("manifest debe ser un objeto JSON")
+    out = _pipeline_dir(work_dir) / "images_generation.json"
+    _write_json(out, data)
+    _set_step(work_dir, "images_generation", state="done", detail="Guardado desde el editor.")
+    st = read_pipeline_state(work_dir)
+    gs_raw = st.get("state") or "idle"
+    gs = cast(
+        PipelineStatus,
+        gs_raw if gs_raw in ("idle", "running", "done", "error") else "idle",
+    )
+    _set_pipeline_state(work_dir, state=gs, current_step=None, last_error=None)
+
+
+def apply_imported_guion_to_work(
+    work_dir: Path,
+    text: str,
+    *,
+    detail: str = "Guion aplicado (biblioteca o archivo).",
+) -> None:
+    """Escribe guion + pipeline/script + script.json y marca Script Writer como listo."""
+    from videomaker.core.saved_guiones_store import write_guion_to_session_work_dir
+
+    write_guion_to_session_work_dir(work_dir, text)
+    _set_step(work_dir, "script_writer", state="done", detail=(detail or "Importado.")[:800])
+    st = read_pipeline_state(work_dir)
+    gs_raw = st.get("state") or "idle"
+    gs = cast(
+        PipelineStatus,
+        gs_raw if gs_raw in ("idle", "running", "done", "error") else "idle",
+    )
+    _set_pipeline_state(work_dir, state=gs, current_step=None, last_error=None)
 

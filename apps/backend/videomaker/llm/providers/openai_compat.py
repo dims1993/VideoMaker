@@ -8,7 +8,14 @@ from typing import Any
 import requests
 
 
-def openai_compat_chat(*, system: str, user: str, model: str) -> str:
+def openai_compat_chat(
+    *,
+    system: str,
+    user: str,
+    model: str,
+    response_json: bool = False,
+    temperature: float | None = None,
+) -> str:
     """
     Requiere:
     - OPENAI_API_KEY
@@ -29,8 +36,10 @@ def openai_compat_chat(*, system: str, user: str, model: str) -> str:
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        "temperature": 0.7,
+        "temperature": 0.7 if temperature is None else float(temperature),
     }
+    if response_json:
+        payload["response_format"] = {"type": "json_object"}
     r = requests.post(url, headers=headers, json=payload, timeout=120)
     r.raise_for_status()
     data = r.json()

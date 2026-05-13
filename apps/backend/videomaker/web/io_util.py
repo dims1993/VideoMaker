@@ -261,13 +261,20 @@ def build_session_state(work: str) -> dict:
     script_path = work_dir / "guion.txt"
     narration_path = work_dir / "narracion.wav"
     clone_ref = work_dir / "clone_reference.wav"
-    stock_dir = work_dir / "stock"
     draft_path = work_dir / "draft.mp4"
     preview_files = sorted(work_dir.glob("preview_voice*.wav"))
     status_bundle = read_status(work_dir)
     manifest = read_narration_manifest(work_dir)
     active_name = manifest.get("active")
     narr_mtime = int(narration_path.stat().st_mtime) if narration_path.is_file() else 0
+    draft_mtime = int(draft_path.stat().st_mtime) if draft_path.is_file() else 0
+    imgs_dir = work_dir / "pipeline" / "images"
+    _img_exts = {".png", ".jpg", ".jpeg", ".webp"}
+    pipeline_images_count = (
+        sum(1 for p in imgs_dir.iterdir() if p.is_file() and p.suffix.lower() in _img_exts)
+        if imgs_dir.is_dir()
+        else 0
+    )
     arch_sorted = sorted(
         list_narration_archives(work_dir),
         key=lambda p: p.stat().st_mtime,
@@ -293,7 +300,6 @@ def build_session_state(work: str) -> dict:
         "OLLAMA_BASE_URL": os.environ.get("OLLAMA_BASE_URL", ""),
         "OLLAMA_MODEL": os.environ.get("OLLAMA_MODEL", ""),
         "OPENAI_API_KEY": bool(os.environ.get("OPENAI_API_KEY")),
-        "PEXELS_API_KEY": bool(os.environ.get("PEXELS_API_KEY")),
     }
     return {
         "work": work,
@@ -308,7 +314,7 @@ def build_session_state(work: str) -> dict:
         "narration_url": f"/work-file?work={work}&name=narracion.wav&v={narr_mtime}",
         "has_clone_reference": clone_ref.is_file(),
         "clone_reference_url": f"/work-file?work={work}&name=clone_reference.wav",
-        "stock_count": len(list(stock_dir.glob("*.mp4"))) if stock_dir.is_dir() else 0,
+        "pipeline_images_count": pipeline_images_count,
         "draft_exists": draft_path.is_file(),
         "draft_path": str(draft_path),
         "env": env,
@@ -322,5 +328,10 @@ def build_session_state(work: str) -> dict:
         "urls": {
             "narration": f"/work-file?work={work}&name=narracion.wav&v={narr_mtime}",
             "clone_reference": f"/work-file?work={work}&name=clone_reference.wav",
+            "draft": (
+                f"/work-file?work={work}&name=draft.mp4&v={draft_mtime}"
+                if draft_path.is_file()
+                else ""
+            ),
         },
     }

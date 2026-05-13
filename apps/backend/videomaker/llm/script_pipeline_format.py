@@ -1,5 +1,5 @@
 """
-Contrato técnico común del pipeline de guion (etiquetas TTS/B-roll/stock).
+Contrato técnico común del pipeline de guion (etiquetas TTS/B-roll).
 
 La **voz, ritmo y arquitectura narrativa** las define la plantilla del paso **Prompt**
 (y el overlay de Script Writer), editable en la app. Este módulo solo asegura salida
@@ -59,7 +59,7 @@ def _technical_es(dm: float) -> str:
         - Primero un OUTLINE con tiempos orientativos por parte, coherente con las instrucciones de tu plantilla de Prompt / Script Writer.
         - Luego el GUIÓN con `[CATEGORIA: …]` al inicio de cada bloque según esa misma arquitectura (no impongas desde aquí un número fijo de secciones).
         - Inserta `[B-ROLL: descripción concreta]` aproximadamente cada dos frases narrables, en el punto donde debe cambiar la imagen (no al final del párrafo ni del guion). El TTS no lee estas etiquetas.
-        - Al final, una línea con 8–12 keywords en inglés separadas por comas para búsqueda de stock (Pexels).
+        - Al final, una línea con 8–12 keywords en inglés separadas por comas como referencia visual (moodboard / equipo de imagen).
         - Referencia de duración total hablada del vídeo: ~{dm:.1f} min (orientativo).
         - Evita Markdown decorativo dentro del texto hablado si puede interferir con el TTS.
         """
@@ -73,7 +73,7 @@ def _technical_en(dm: float) -> str:
         - Start with an OUTLINE with rough timings per section, aligned with your Prompt / Script Writer template.
         - Then the script with `[CATEGORIA: …]` at the start of each block following that architecture (do not impose a fixed section count from here).
         - Insert `[B-ROLL: concrete description]` roughly every two spoken sentences, where the cut should happen (not bunched at paragraph end). TTS does not read these tags.
-        - End with one line: 8–12 English keywords comma-separated for stock search (Pexels).
+        - End with one line: 8–12 English keywords comma-separated as visual reference for the team or image generation.
         - Target spoken length reference: ~{dm:.1f} min (orientative).
         """
     ).strip()

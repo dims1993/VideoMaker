@@ -1,29 +1,29 @@
 #!/usr/bin/env python3
 """
-Interfaz web para probar el pipeline Videomaker.
+Interfaz Streamlit opcional para probar el pipeline Videomaker.
 
-Lanzar desde la raíz del proyecto (con el venv activado):
+Lanzar desde la raíz del proyecto (venv activado, PYTHONPATH al backend):
 
-    streamlit run streamlit_app.py
-
-O:
-
-    .venv/bin/streamlit run streamlit_app.py
+    PYTHONPATH=apps/backend streamlit run streamlit_app.py
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import replace
+import sys
 from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent
+_BACKEND = _ROOT / "apps" / "backend"
+if _BACKEND.is_dir() and str(_BACKEND) not in sys.path:
+    sys.path.insert(0, str(_BACKEND))
 
 import streamlit as st
 from dotenv import load_dotenv
 
-from videomaker import config
-from videomaker.keyword_planner import plan_stock_keywords
-from videomaker.models import Locale, ScriptBlueprint
-from videomaker.script_gen import dry_run_prompt, generate_script
+from videomaker.core import config
+from videomaker.core.models import Locale, ScriptBlueprint
+from videomaker.llm.script_gen import dry_run_prompt, generate_script
 
 
 def _parse_locale(s: str) -> Locale:
@@ -45,14 +45,14 @@ def main() -> None:
     load_dotenv()
     st.set_page_config(page_title="Videomaker", layout="wide", initial_sidebar_state="expanded")
     st.title("Videomaker")
-    st.caption("Guion → voz → stock Pexels → montaje (MoviePy). Las API keys van en `.env`.")
+    st.caption("Guion → voz → montaje draft (MoviePy). Las API keys van en `.env`.")
 
     with st.sidebar:
         st.subheader("Carpeta de trabajo")
         wd = st.text_input(
             "Ruta relativa al proyecto",
             value=st.session_state.get("work_rel", "output/ui_session"),
-            help="Aquí se guardarán guion.txt, narracion.wav, stock/, draft.mp4",
+            help="Aquí se guardarán guion.txt, narracion.wav, draft.mp4",
         )
         st.session_state["work_rel"] = wd
         try:
@@ -64,14 +64,18 @@ def main() -> None:
         st.code(str(work), language="text")
         st.divider()
         st.markdown("**APIs (.env)**")
-        st.write("- `ANTHROPIC_API_KEY` — guion Claude")
-        st.write("- `PEXELS_API_KEY` — vídeo stock")
+        st.write("- `ANTHROPIC_API_KEY` — guion (si usas Claude en este flujo)")
         st.divider()
-        st.markdown("**Lanzamiento por terminal**")
-        st.code("cd " + str(config.PROJECT_ROOT) + "\nsource .venv/bin/activate\nstreamlit run streamlit_app.py", language="bash")
+        st.markdown("**Lanzamiento**")
+        st.code(
+            "cd "
+            + str(config.PROJECT_ROOT)
+            + "\nexport PYTHONPATH=apps/backend\nsource .venv/bin/activate\nstreamlit run streamlit_app.py",
+            language="bash",
+        )
 
     tab_prompt, tab_tts, tab_pipe = st.tabs(
-        ["1 · Prompt y guion", "2 · Voz (prueba)", "3 · Narración, stock y vídeo"]
+        ["1 · Prompt y guion", "2 · Voz (prueba)", "3 · Narración y vídeo"]
     )
 
     with tab_prompt:
@@ -122,7 +126,7 @@ def main() -> None:
     with tab_tts:
         st.subheader("Síntesis de una frase (Coqui / XTTS)")
         st.caption("Requiere `pip install TTS torch` en el venv. La primera ejecución descarga modelos.")
-        from videomaker.voice_gen import VOICE_PRESETS, get_voice_preset, synthesize_with_coqui
+        from videomaker.tts.voice_gen import VOICE_PRESETS, get_voice_preset, synthesize_with_coqui
 
         preset = st.selectbox("Preset de voz", sorted(VOICE_PRESETS.keys()), index=0)
         phrase = st.text_area("Texto a narrar", "Hola, esto es una prueba de voz desde la interfaz web.", height=80)
@@ -137,7 +141,7 @@ def main() -> None:
                 st.exception(e)
 
     with tab_pipe:
-        st.subheader("Narración completa, descarga de stock y montaje")
+        st.subheader("Narración completa y montaje draft")
         guion_path = work / "guion.txt"
         if guion_path.is_file():
             st.success(f"Hay guion: `{guion_path.name}`")
@@ -151,8 +155,8 @@ def main() -> None:
             st.success("Guion subido a la carpeta de trabajo.")
             st.rerun()
 
-        from videomaker.voice_gen import get_voice_preset
-        from videomaker.narration import build_narration_wav
+        from videomaker.tts.voice_gen import VOICE_PRESETS, get_voice_preset
+        from videomaker.audio.narration import build_narration_wav
         from videomaker.web.io_util import finalize_new_narration
 
         preset_n = st.selectbox("Preset narración", sorted(VOICE_PRESETS.keys()), index=0, key="preset_narr")
@@ -183,51 +187,21 @@ def main() -> None:
                     st.exception(e)
 
         st.divider()
-        st.subheader("2 · Descargar stock (Pexels)")
-        if not os.environ.get("PEXELS_API_KEY"):
-            st.warning("Falta `PEXELS_API_KEY` en `.env`.")
-        if st.button("Descargar clips a stock/", disabled=not guion_path.is_file() or not os.environ.get("PEXELS_API_KEY")):
-            from videomaker.audio_concat import wav_duration_seconds
-            from videomaker.stock_download import download_stock_for_queries
-            from videomaker.stock_pexels import PexelsClient
-
-            script = guion_path.read_text(encoding="utf-8")
-            lang_hint = "es"
-            audio_s = None
-            nwav = work / "narracion.wav"
-            if nwav.is_file():
-                audio_s = wav_duration_seconds(nwav)
-            try:
-                with st.spinner("Buscando y descargando…"):
-                    plan = plan_stock_keywords(script, audio_duration_s=audio_s, lang_hint=lang_hint)
-                    client = PexelsClient()
-                    stock_dir = work / "stock"
-                    paths = download_stock_for_queries(client, plan, stock_dir, max_downloads=25)
-                st.success(f"{len(paths)} archivos en {stock_dir}")
-                for p in paths[:12]:
-                    st.text(p.name)
-                if len(paths) > 12:
-                    st.caption(f"… y {len(paths) - 12} más")
-            except Exception as e:
-                st.exception(e)
-
-        st.divider()
-        st.subheader("3 · Montar draft.mp4")
+        st.subheader("2 · Montar draft.mp4")
+        st.caption("Usa `narracion.wav`, imágenes en `pipeline/images/` si existen, o fondo sólido.")
         no_music = st.checkbox("Sin música automática de musica_libre/", value=False)
         do_subs = st.checkbox("Generar subtítulos (Whisper + ffmpeg) después del MP4", value=False)
         whisper_lang = st.text_input("Idioma Whisper (opcional)", placeholder="es o en — vacío = autodetectar")
         if st.button("Renderizar vídeo", type="primary"):
-            from videomaker.render import render_draft_video
-            from videomaker.subtitles_whisper import segments_to_srt, transcribe_for_subtitles
-            from videomaker.subtitles_ffmpeg import burn_subtitles_srt
+            from videomaker.video.render import render_draft_video
+            from videomaker.video.subtitles_whisper import segments_to_srt, transcribe_for_subtitles
+            from videomaker.video.subtitles_ffmpeg import burn_subtitles_srt
 
             narr = work / "narracion.wav"
             stock_dir = work / "stock"
             out = work / "draft.mp4"
             if not narr.is_file():
                 st.error("Falta narracion.wav — ejecuta el paso 1.")
-            elif not list(stock_dir.glob("*.mp4")):
-                st.error("No hay .mp4 en stock/ — ejecuta el paso 2.")
             else:
                 try:
                     with st.spinner("MoviePy está renderizando (puede tardar varios minutos)…"):
@@ -235,8 +209,10 @@ def main() -> None:
                             narr,
                             stock_dir,
                             out,
+                            work_dir=work,
                             music_path=None,
                             pick_music_from_project=not no_music,
+                            render_no_music=bool(no_music),
                         )
                     st.success(str(out.resolve()))
                     st.video(str(out))
@@ -256,22 +232,6 @@ def main() -> None:
                         st.video(str(out_subs))
                     except Exception as e:
                         st.exception(e)
-
-        st.divider()
-        st.subheader("Vista previa del plan de stock (solo texto)")
-        if guion_path.is_file():
-            script = guion_path.read_text(encoding="utf-8")
-            from videomaker.audio_concat import wav_duration_seconds
-
-            ad = None
-            if (work / "narracion.wav").is_file():
-                ad = wav_duration_seconds(work / "narracion.wav")
-            plan = plan_stock_keywords(script, audio_duration_s=ad, lang_hint="es")
-            st.dataframe(
-                [{"inicio_s": q.start_audio_s, "fin_s": q.end_audio_s, "query": q.query} for q in plan[:30]],
-                use_container_width=True,
-                hide_index=True,
-            )
 
 
 if __name__ == "__main__":

@@ -102,6 +102,45 @@ export function useScriptWriterLibrary() {
     }
   }, []);
 
+  const applyTemplateFields = useCallback((t: {
+    name?: string;
+    system_instructions?: string;
+    user_instructions?: string;
+    params_json?: {
+      pacing?: string;
+      data_density?: string;
+      structure_preset?: string;
+      chunking?: string;
+      narrative_preset?: string;
+      fragment_minute_weights?: unknown;
+    };
+  }) => {
+    setSwName(t.name || "");
+    setSwSystem(t.system_instructions || "");
+    setSwUser(t.user_instructions || "");
+    const pj = t.params_json ?? {};
+    const p = pj.pacing === "short" || pj.pacing === "mixed" || pj.pacing === "long" ? pj.pacing : "";
+    setSwPacing(p);
+    const d = pj.data_density === "low" || pj.data_density === "medium" || pj.data_density === "high" ? pj.data_density : "";
+    setSwDataDensity(d);
+    const s = pj.structure_preset === "default_five_blocks" || pj.structure_preset === "four_act" ? pj.structure_preset : "";
+    setSwStructure(s);
+    const ck = pj.chunking;
+    setSwChunking(ck === "outline_act1_only" ? "outline_act1_only" : ck === "sequential_fragments" ? "sequential_fragments" : "full_pass");
+    const fw = pj.fragment_minute_weights;
+    if (Array.isArray(fw) && fw.length > 0 && fw.every((x) => typeof x === "number" && !Number.isNaN(x))) {
+      setSwFragmentWeights((fw as number[]).join(", "));
+    } else {
+      setSwFragmentWeights("");
+    }
+    const np = pj.narrative_preset;
+    if (np === "finanzas" || np === "entretenimiento" || np === "tutorial" || np === "ventas") {
+      setSwNarrativePreset(np);
+    } else {
+      setSwNarrativePreset("");
+    }
+  }, []);
+
   const buildPayload = useCallback(() => {
     const params_json: Record<string, unknown> = {};
     if (swPacing) params_json.pacing = swPacing;
@@ -173,6 +212,7 @@ export function useScriptWriterLibrary() {
     swNarrativePreset,
     setSwNarrativePreset,
     applyTemplateFromApi,
+    applyTemplateFields,
     saveTemplate,
     deleteTemplate,
   };
