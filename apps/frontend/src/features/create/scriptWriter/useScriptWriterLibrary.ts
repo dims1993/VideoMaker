@@ -28,6 +28,9 @@ export function useScriptWriterLibrary() {
   const [swName, setSwName] = useState("");
   const [swSystem, setSwSystem] = useState("");
   const [swUser, setSwUser] = useState("");
+  /** Defaults de sesión que se guardan en el template (para que no “se desvanezcan”). */
+  const [swSessionKeywords, setSwSessionKeywords] = useState("");
+  const [swSessionContext, setSwSessionContext] = useState("");
   const [swPacing, setSwPacing] = useState<ScriptWriterPacing>("");
   const [swDataDensity, setSwDataDensity] = useState<ScriptWriterDataDensity>("");
   const [swStructure, setSwStructure] = useState<ScriptWriterStructure>("four_act");
@@ -67,7 +70,11 @@ export function useScriptWriterLibrary() {
       chunking?: string;
       fragment_minute_weights?: unknown;
       narrative_preset?: string;
+      session_keywords?: string;
+      session_context?: string;
     };
+    setSwSessionKeywords((pj.session_keywords as string) || "");
+    setSwSessionContext((pj.session_context as string) || "");
     const p = pj.pacing === "short" || pj.pacing === "mixed" || pj.pacing === "long" ? pj.pacing : "";
     setSwPacing(p);
     const d =
@@ -113,12 +120,16 @@ export function useScriptWriterLibrary() {
       chunking?: string;
       narrative_preset?: string;
       fragment_minute_weights?: unknown;
+      session_keywords?: string;
+      session_context?: string;
     };
   }) => {
     setSwName(t.name || "");
     setSwSystem(t.system_instructions || "");
     setSwUser(t.user_instructions || "");
     const pj = t.params_json ?? {};
+    setSwSessionKeywords((pj.session_keywords as string) || "");
+    setSwSessionContext((pj.session_context as string) || "");
     const p = pj.pacing === "short" || pj.pacing === "mixed" || pj.pacing === "long" ? pj.pacing : "";
     setSwPacing(p);
     const d = pj.data_density === "low" || pj.data_density === "medium" || pj.data_density === "high" ? pj.data_density : "";
@@ -143,6 +154,8 @@ export function useScriptWriterLibrary() {
 
   const buildPayload = useCallback(() => {
     const params_json: Record<string, unknown> = {};
+    if (swSessionKeywords.trim()) params_json.session_keywords = swSessionKeywords.trim();
+    if (swSessionContext.trim()) params_json.session_context = swSessionContext.trim();
     if (swPacing) params_json.pacing = swPacing;
     if (swDataDensity) params_json.data_density = swDataDensity;
     if (swStructure) params_json.structure_preset = swStructure;
@@ -167,7 +180,7 @@ export function useScriptWriterLibrary() {
       user_instructions: swUser,
       params_json,
     };
-  }, [swName, swSystem, swUser, swPacing, swDataDensity, swStructure, swChunking, swFragmentWeights, swNarrativePreset]);
+  }, [swName, swSystem, swUser, swSessionKeywords, swSessionContext, swPacing, swDataDensity, swStructure, swChunking, swFragmentWeights, swNarrativePreset]);
 
   const saveTemplate = useCallback(async () => {
     const payload = buildPayload();
@@ -199,6 +212,10 @@ export function useScriptWriterLibrary() {
     setSwSystem,
     swUser,
     setSwUser,
+    swSessionKeywords,
+    setSwSessionKeywords,
+    swSessionContext,
+    setSwSessionContext,
     swPacing,
     setSwPacing,
     swDataDensity,
