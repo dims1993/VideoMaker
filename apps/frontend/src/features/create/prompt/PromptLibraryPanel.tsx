@@ -415,7 +415,7 @@ export function PromptLibraryPanel({
 
       {previewFullscreen && (
         <div
-          className="fixed inset-0 z-[200] flex items-stretch justify-center bg-slate-950/55 p-2 sm:p-4"
+          className="fixed inset-y-0 left-[280px] right-0 z-[200] flex items-stretch justify-center bg-slate-950/55 p-2 sm:p-4"
           role="dialog"
           aria-modal="true"
           aria-label="Preview Merger JSON a pantalla completa"

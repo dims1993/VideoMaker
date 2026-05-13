@@ -864,12 +864,6 @@ export function ScriptWriterPanel({
             <Btn type="button" className="border border-slate-600 bg-slate-800 text-slate-200 hover:bg-slate-700" onClick={() => void loadScript()}>
               Recargar desde disco
             </Btn>
-            <div role="button" tabIndex={0}
-              className="cursor-pointer rounded-lg border border-slate-600 bg-slate-800 px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700"
-              onClick={() => setScriptEditorFullscreen(true)}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setScriptEditorFullscreen(true); } }}>
-              Pantalla completa
-            </div>
           </div>
         </div>
         <div role="button" tabIndex={0} aria-label="Abrir editor de guion a pantalla completa"
@@ -895,7 +889,7 @@ export function ScriptWriterPanel({
       </div>
 
       {scriptEditorFullscreen && (
-        <div className="fixed inset-0 z-[200] flex items-stretch justify-center bg-slate-950/55 p-2 sm:p-4"
+        <div className="fixed inset-y-0 left-[280px] right-0 z-[200] flex items-stretch justify-center bg-slate-950/55 p-2 sm:p-4"
           role="dialog" aria-modal="true" aria-label="Editor de guion a pantalla completa">
           <div className="flex h-[min(calc(100vh-1rem),920px)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
             <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">

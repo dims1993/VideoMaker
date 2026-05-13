@@ -186,7 +186,7 @@ export function HookSceneRouterPanel({
       </div>
 
       {fullscreen && (
-        <div className="fixed inset-0 z-[200] flex items-stretch justify-center bg-slate-950/55 p-2 sm:p-4" role="dialog" aria-modal="true">
+        <div className="fixed inset-y-0 left-[280px] right-0 z-[200] flex items-stretch justify-center bg-slate-950/55 p-2 sm:p-4" role="dialog" aria-modal="true">
           <div className="flex h-[min(calc(100vh-1rem),920px)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
             <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
               <span className="text-sm font-semibold text-slate-900">hook_scene_router.json</span>

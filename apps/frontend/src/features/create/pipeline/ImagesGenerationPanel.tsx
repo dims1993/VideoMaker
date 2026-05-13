@@ -70,7 +70,7 @@ function ImageCard({ img, workApplied, onToggle, onPreview }: {
 
 function PromptModal({ img, onClose }: { img: ImageEntry; onClose: () => void }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
+    <div className="fixed inset-y-0 left-[280px] right-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
       <div className="relative max-w-2xl w-full rounded-2xl bg-white p-5 shadow-2xl space-y-3" onClick={(e) => e.stopPropagation()}>
         <button className="absolute right-4 top-4 text-slate-400 hover:text-slate-700" onClick={onClose}>✕</button>
         <div className="flex items-center gap-2">

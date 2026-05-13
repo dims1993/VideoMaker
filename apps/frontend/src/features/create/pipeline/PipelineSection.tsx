@@ -30,12 +30,26 @@ export function PipelineSection({
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState<boolean>(() => readSectionStorage()[id] ?? false);
+  const toggle = () =>
+    setOpen((v) => {
+      writeSectionStorage(id, !v);
+      return !v;
+    });
   return (
     <div className={`overflow-hidden rounded-xl border transition-all ${open ? "border-slate-700 shadow-md" : "border-slate-600 hover:border-slate-500"}`}>
-      <button
-        type="button"
+      {/* Use a div instead of <button> so it still works inside <fieldset disabled>. */}
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
         className="flex w-full items-start justify-between gap-3 bg-gradient-to-r from-slate-800 to-slate-700 px-4 py-3 text-left transition-colors hover:from-slate-750 hover:to-slate-650"
-        onClick={() => setOpen((v) => { writeSectionStorage(id, !v); return !v; })}
+        onClick={toggle}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            toggle();
+          }
+        }}
       >
         <div className="flex min-w-0 flex-1 flex-col gap-y-0.5">
           <div className="flex items-center gap-2">
@@ -53,7 +67,7 @@ export function PipelineSection({
           )}
         </div>
         <span className={`mt-0.5 shrink-0 text-slate-400 transition-transform text-sm ${open ? "rotate-180" : ""}`}>▾</span>
-      </button>
+      </div>
       {open && (
         <div className={[
           "border-t border-slate-700 bg-slate-800 px-4 pb-4 pt-3",

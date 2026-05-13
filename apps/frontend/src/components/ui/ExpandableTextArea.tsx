@@ -31,15 +31,35 @@ function FullscreenEditor({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex flex-col bg-black/50 backdrop-blur-sm"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      className="fixed inset-y-0 left-[280px] right-0 z-[200] flex items-stretch justify-center bg-slate-950/55 p-2 sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
-      <div className="flex flex-1 flex-col bg-white shadow-2xl m-4 rounded-2xl overflow-hidden">
-        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-          <span className="text-sm font-semibold text-slate-800">{title}</span>
-          <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
-            <kbd className="rounded bg-slate-100 px-1.5 py-0.5 font-mono">Esc</kbd>
-            <span>cerrar sin guardar</span>
+      <div className="flex h-[min(calc(100vh-1rem),920px)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
+          <span className="text-sm font-semibold text-slate-900">{title}</span>
+          <div className="flex flex-wrap gap-2">
+            <Btn
+              type="button"
+              className="bg-slate-900 text-white hover:bg-slate-800"
+              onClick={() => {
+                onSave(draft);
+                onClose();
+              }}
+            >
+              Guardar
+            </Btn>
+            <Btn
+              type="button"
+              className="bg-white text-slate-800 ring-1 ring-slate-200 hover:bg-slate-50"
+              onClick={onClose}
+            >
+              Cerrar sin guardar
+            </Btn>
           </div>
         </div>
 
@@ -47,31 +67,14 @@ function FullscreenEditor({
           ref={taRef}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          className="flex-1 resize-none px-4 py-3 font-mono text-sm text-slate-800 focus:outline-none"
+          className="min-h-0 flex-1 resize-none border-0 !bg-white px-4 py-3 font-mono text-sm leading-relaxed !text-slate-900 outline-none focus:ring-0"
           spellCheck={false}
         />
 
-        <div className="flex items-center justify-between border-t border-slate-200 px-4 py-3 bg-slate-50">
-          <span className="text-[11px] text-slate-400">
-            {draft.length.toLocaleString()} caracteres
-          </span>
-          <div className="flex gap-2">
-            <Btn
-              type="button"
-              className="bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
-              onClick={onClose}
-            >
-              Cancelar
-            </Btn>
-            <Btn
-              type="button"
-              className="bg-slate-900 text-white hover:bg-slate-800"
-              onClick={() => { onSave(draft); onClose(); }}
-            >
-              Guardar
-            </Btn>
-          </div>
-        </div>
+        <p className="shrink-0 border-t border-slate-100 px-4 py-2 text-[11px] leading-snug text-slate-500">
+          <kbd className="rounded bg-slate-100 px-1 font-mono text-[10px]">Esc</kbd>
+          {" "}cierra · {draft.length.toLocaleString()} caracteres
+        </p>
       </div>
     </div>
   );
@@ -95,15 +98,29 @@ export function ExpandableTextArea({
   onChange: (v: string) => void;
   placeholder?: string;
   modalTitle: string;
-  variant?: "form" | "output";
+  variant?: "form" | "output" | "outputLight";
 }) {
   const [modalOpen, setModalOpen] = useState(false);
-  const preview = value.trim().slice(0, 160);
+  const fullText = value.trim();
+  const previewLimit = variant === "output" || variant === "outputLight" ? 600 : 160;
+  const preview = fullText.slice(0, previewLimit);
+  const hasMore = fullText.length > previewLimit;
 
   const containerClass =
     variant === "output"
-      ? "group relative w-full cursor-pointer rounded-xl border border-slate-600 bg-slate-800 px-3 py-2 text-left shadow-inner outline-none transition hover:border-slate-500"
-      : "group relative cursor-pointer rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 hover:border-slate-400 hover:shadow-sm transition-all";
+      ? "group relative min-h-[120px] w-full cursor-pointer rounded-xl border border-slate-600 bg-slate-800 px-3 py-2 text-left shadow-inner outline-none transition hover:border-slate-500"
+      : variant === "outputLight"
+        ? "group relative min-h-[120px] w-full cursor-pointer rounded-xl border border-slate-200 bg-white px-3 py-2 text-left shadow-inner outline-none transition hover:border-slate-300"
+      : "group relative w-full cursor-pointer rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 transition-all hover:border-slate-400 hover:shadow-sm";
+
+  const textClass =
+    variant === "output"
+      ? `block max-h-[280px] overflow-y-auto whitespace-pre-wrap break-words pr-10 font-mono text-xs leading-relaxed ${preview ? "text-slate-200" : "text-slate-500"}`
+      : variant === "outputLight"
+        ? `block max-h-[280px] overflow-y-auto whitespace-pre-wrap break-words pr-10 font-mono text-xs leading-relaxed ${preview ? "text-slate-900" : "text-slate-500"}`
+      : `block max-h-[5.5rem] overflow-hidden whitespace-pre-wrap break-words pr-10 font-mono text-xs leading-snug ${
+          preview ? "text-slate-300" : "text-slate-500"
+        }`;
 
   return (
     <>
@@ -117,13 +134,11 @@ export function ExpandableTextArea({
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setModalOpen(true); } }}
         title="Clic para editar a pantalla completa"
       >
-        {preview ? (
-          <pre className="whitespace-pre-wrap font-mono text-xs text-slate-300 leading-snug line-clamp-4">
-            {preview}{value.trim().length > 160 ? "…" : ""}
-          </pre>
-        ) : (
-          <span className="text-xs text-slate-500 italic">{placeholder ?? "Vacío — clic para editar"}</span>
-        )}
+        <span className={textClass}>
+          {preview
+            ? `${preview}${hasMore ? "…" : ""}`
+            : placeholder || "Vacío — clic para editar"}
+        </span>
         <span className="absolute right-2 top-2 rounded bg-slate-600 px-1.5 py-0.5 text-[10px] text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity">
           ✎ editar
         </span>

@@ -765,7 +765,7 @@ export default function App() {
       </main>
 
       {promptOpen && promptData ? (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/40 p-4 sm:items-center" role="dialog">
+        <div className="fixed inset-y-0 left-[280px] right-0 z-50 flex items-end justify-center bg-slate-900/40 p-4 sm:items-center" role="dialog">
           <div className="max-h-[85vh] w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
               <span className="font-semibold text-slate-900">Prompt (sin llamar a la API)</span>
