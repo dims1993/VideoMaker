@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Btn, Input, Label, Select, TextArea } from "../../../components/ui";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Btn, ExpandableTextArea, Input, IosSwitch, Label, Select, TextArea } from "../../../components/ui";
 import { postJson, putJson, deleteReq } from "../../../services/api";
 import type { RunFn } from "../types";
+import { PipelineSection as Section } from "./PipelineSection";
 
 type TargetGenerator = "midjourney" | "flux" | "dall_e" | "sd" | "custom";
 
@@ -44,11 +45,11 @@ interface PromptItem {
 }
 
 const ACT_COLORS: Record<string, string> = {
-  hook:  "bg-amber-100 text-amber-800",
-  intro: "bg-violet-100 text-violet-800",
-  body:  "bg-slate-100 text-slate-700",
-  cta:   "bg-blue-100 text-blue-800",
-  outro: "bg-emerald-100 text-emerald-800",
+  hook:  "bg-amber-950/50 text-amber-300 ring-1 ring-amber-500/30",
+  intro: "bg-violet-950/40 text-violet-200 ring-1 ring-violet-500/30",
+  body:  "bg-slate-600 text-slate-200",
+  cta:   "bg-sky-950/40 text-sky-200 ring-1 ring-sky-500/30",
+  outro: "bg-emerald-950/40 text-emerald-200 ring-1 ring-emerald-500/30",
 };
 const ACT_LABELS: Record<string, string> = {
   hook: "Hook", intro: "Intro", body: "Body", cta: "CTA", outro: "Outro",
@@ -122,7 +123,7 @@ function PromptCard({
   return (
     <div
       ref={cardRef}
-      className={`rounded-lg border transition-all ${expanded ? "border-slate-300 shadow-sm" : "border-slate-200 hover:border-slate-300"}`}
+      className={`rounded-xl border transition-all ${expanded ? "border-slate-500 bg-slate-800/80 shadow-md" : "border-slate-600 bg-slate-800/40 hover:border-slate-500"}`}
     >
       {/* Collapsed header — always visible, clickable */}
       <button
@@ -132,7 +133,7 @@ function PromptCard({
         disabled={readOnly}
       >
         {/* Index badge */}
-        <span className="mt-0.5 shrink-0 rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-500">
+        <span className="mt-0.5 shrink-0 rounded bg-slate-700 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
           {isSpecial ? (item.id ?? index + 1) : `#${index + 1}`}
         </span>
         {/* Act badge */}
@@ -141,33 +142,33 @@ function PromptCard({
         </span>
         {/* Expression badge */}
         {editExpression && (
-          <span className="mt-0.5 shrink-0 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-700">
+          <span className="mt-0.5 shrink-0 rounded bg-indigo-950/50 px-1.5 py-0.5 text-[10px] text-indigo-200 ring-1 ring-indigo-500/25">
             {editExpression}
           </span>
         )}
         {/* Preview text */}
-        <span className="flex-1 truncate text-[11px] text-slate-700 leading-snug">
+        <span className="flex-1 truncate text-[11px] text-slate-300 leading-snug">
           {preview.slice(0, 110)}{preview.length > 110 ? "…" : ""}
         </span>
         {/* Segment snippet */}
         {item.segment_text && (
-          <span className="hidden shrink-0 max-w-[140px] truncate text-[10px] text-slate-400 sm:block">
+          <span className="hidden shrink-0 max-w-[140px] truncate text-[10px] text-slate-500 sm:block">
             "{(item.segment_text as string).slice(0, 50)}…"
           </span>
         )}
         {/* Chevron */}
-        <span className={`shrink-0 text-slate-400 transition-transform ${expanded ? "rotate-180" : ""}`}>
+        <span className={`shrink-0 text-slate-500 transition-transform ${expanded ? "rotate-180" : ""}`}>
           ▾
         </span>
       </button>
 
       {/* Expanded editor */}
       {expanded && (
-        <div className="border-t border-slate-100 px-3 pb-3 pt-2 space-y-2">
+        <div className="border-t border-slate-600 px-3 pb-3 pt-2 space-y-2">
           {/* Original segment text (readonly) */}
           {item.segment_text && (
-            <div className="rounded bg-slate-50 px-2 py-1.5 text-[10px] text-slate-500 italic leading-snug">
-              <span className="font-semibold not-italic text-slate-400">Texto original: </span>
+            <div className="rounded-lg border border-slate-600 bg-slate-900/50 px-2 py-1.5 text-[10px] text-slate-400 italic leading-snug">
+              <span className="font-semibold not-italic text-slate-500">Texto original: </span>
               {item.segment_text as string}
             </div>
           )}
@@ -175,7 +176,7 @@ function PromptCard({
           <div className="grid gap-2 sm:grid-cols-2">
             <div>
               <Label>Acto</Label>
-              <Select value={editAct} onChange={(e) => setEditAct(e.target.value)}>
+              <Select value={editAct} onChange={(e) => setEditAct(e.target.value)} className="!mt-1 !rounded-lg !border-slate-600 !bg-slate-700 !text-slate-200 !text-xs focus:!border-slate-400">
                 <option value="hook">Hook</option>
                 <option value="intro">Intro (coletilla)</option>
                 <option value="body">Body</option>
@@ -185,7 +186,7 @@ function PromptCard({
             </div>
             <div>
               <Label>Expresión del avatar</Label>
-              <Select value={editExpression} onChange={(e) => setEditExpression(e.target.value)}>
+              <Select value={editExpression} onChange={(e) => setEditExpression(e.target.value)} className="!mt-1 !rounded-lg !border-slate-600 !bg-slate-700 !text-slate-200 !text-xs focus:!border-slate-400">
                 <option value="">— sin especificar —</option>
                 {EXPRESSIONS.map((ex) => (
                   <option key={ex} value={ex}>{ex}</option>
@@ -199,7 +200,7 @@ function PromptCard({
             <TextArea
               value={editSituation}
               onChange={(e) => setEditSituation(e.target.value)}
-              className="min-h-[48px] text-xs"
+              className="min-h-[48px] !border-slate-600 !bg-slate-700 !text-slate-200 !text-xs placeholder:!text-slate-500 focus:!border-slate-400"
               placeholder="¿Qué hace el avatar? ¿Qué hay de fondo?"
             />
           </div>
@@ -211,7 +212,7 @@ function PromptCard({
               <TextArea
                 value={editNarration}
                 onChange={(e) => setEditNarration(e.target.value)}
-                className="min-h-[52px] text-xs"
+                className="min-h-[52px] !border-slate-600 !bg-slate-700 !text-slate-200 !text-xs placeholder:!text-slate-500 focus:!border-slate-400"
                 placeholder="Texto que leerá el TTS para esta imagen…"
               />
             </div>
@@ -222,7 +223,7 @@ function PromptCard({
             <TextArea
               value={editPrompt}
               onChange={(e) => setEditPrompt(e.target.value)}
-              className="min-h-[72px] font-mono text-xs"
+              className="min-h-[72px] !border-slate-600 !bg-slate-700 !font-mono !text-xs !text-slate-200 placeholder:!text-slate-500 focus:!border-slate-400"
               placeholder="Prompt completo en inglés para el generador de imágenes…"
             />
           </div>
@@ -233,21 +234,21 @@ function PromptCard({
               value={editNeg}
               onChange={(e) => setEditNeg(e.target.value)}
               placeholder="realistic, photorealistic, 3D render…"
-              className="font-mono text-xs"
+              className="!mt-1 !rounded-lg !border-slate-600 !bg-slate-700 !font-mono !text-xs !text-slate-200 placeholder:!text-slate-500 focus:!border-slate-400"
             />
           </div>
 
           <div className="flex gap-2 pt-1">
             <Btn
               type="button"
-              className="bg-slate-900 text-white hover:bg-slate-800"
+              className="bg-white text-slate-900 hover:bg-slate-100"
               onClick={handleSave}
             >
               Guardar cambios
             </Btn>
             <Btn
               type="button"
-              className="bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
+              className="border border-slate-500 bg-slate-700 text-slate-200 hover:bg-slate-600"
               onClick={onToggle}
             >
               Cerrar
@@ -464,12 +465,41 @@ export function ImagePromptWriterPanel({
     ? `≈ ${Math.min(avatarMaxImages, Math.round(300 / avatarSecsPerImage))}–${Math.min(avatarMaxImages, Math.round(600 / avatarSecsPerImage))} imgs para 5-10 min de narración`
     : "";
 
+  const showMidjourneySuffixOption = targetGenerator === "midjourney";
+  const showExportNegativeOption = targetGenerator === "sd" || targetGenerator === "flux";
+
+  const parsedPrompts = useMemo((): PromptItem[] => {
+    try {
+      const b = JSON.parse(jsonText) as Record<string, unknown>;
+      if (Array.isArray(b.prompts)) return b.prompts as PromptItem[];
+    } catch { /* invalid */ }
+    return [];
+  }, [jsonText]);
+
+  const updatePromptAt = useCallback((index: number, updated: PromptItem) => {
+    setJsonText((prev) => {
+      try {
+        const bundle = JSON.parse(prev) as Record<string, unknown>;
+        const prompts = Array.isArray(bundle.prompts) ? [...(bundle.prompts as PromptItem[])] : [];
+        if (!prompts.length) return prev;
+        prompts[index] = updated;
+        return JSON.stringify({ ...bundle, prompts }, null, 2);
+      } catch {
+        return prev;
+      }
+    });
+    setExpandedId(null);
+  }, []);
+
   return (
     <div className="rounded-2xl bg-slate-900 p-4 space-y-3">
-      <div className="rounded-xl border border-slate-600 bg-slate-800 px-3 py-2 text-xs text-slate-400">
-        <span className="font-semibold text-white">Image Prompt Writer</span> prepara{" "}
-        <code className="rounded bg-slate-700 px-1">pipeline/image_prompts.json</code> para generadores IA.{" "}
-        <strong className="text-slate-300">Start step</strong> fusiona desde Hook Router o genera prompts de avatar (si está activado).
+      <div className="rounded-xl border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
+        <span className="font-semibold">Image Prompt Writer.</span> Orden recomendado:{" "}
+        <strong className="text-amber-100">1</strong> generador y exportación,{" "}
+        <strong className="text-amber-100">2</strong> importar desde Hook o Metadata,{" "}
+        <strong className="text-amber-100">3</strong> modo avatar solo si lo necesitas, luego revisa la{" "}
+        <strong className="text-amber-100">salida</strong> abajo.{" "}
+        <strong className="text-amber-100">Start step</strong> en la tarjeta del paso puede fusionar o generar con avatar si está activo.
       </div>
 
       {generationRunning && (
@@ -478,182 +508,286 @@ export function ImagePromptWriterPanel({
         </div>
       )}
 
-      {/* ── Avatar Section ─────────────────────────────────── */}
-      <div className="space-y-3 rounded-xl border border-slate-600 bg-gradient-to-r from-slate-800 to-slate-700 p-3">
-        <div className="flex items-center justify-between">
-          <div className="text-xs font-semibold uppercase tracking-wide text-slate-300">
-            Avatar del canal
-          </div>
-          <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
-            <input
-              type="checkbox"
-              checked={useAvatar}
+      <Section
+        id="ipw-generator"
+        badge="1"
+        title="Generador y exportación"
+        description="Motor de imagen y opciones que aplican a ese motor. El sufijo Midjourney solo aplica si eliges Midjourney; el negative por separado solo si eliges Flux o Stable Diffusion."
+      >
+        <div className="space-y-3">
+          <div>
+            <Label>Generador objetivo</Label>
+            <Select
+              value={targetGenerator}
               disabled={generationRunning}
-              onChange={(e) => setUseAvatar(e.target.checked)}
-            />
-            Activar modo avatar
-          </label>
-        </div>
-
-        <p className="text-[11px] leading-snug text-slate-400">
-          Cuando está activado, el pipeline genera <strong className="text-slate-300">un prompt por imagen</strong>, describiendo
-          al avatar en la situación correspondiente a cada segmento de la narración.
-        </p>
-
-        {/* Selector de avatar */}
-        <div className="space-y-2">
-          <div className="flex items-end gap-2">
-            <div className="flex-1">
-              <Label>Avatar seleccionado</Label>
-              <Select
-                value={selectedAvatarId}
-                disabled={generationRunning}
-                onChange={(e) => setSelectedAvatarId(e.target.value)}
-              >
-                <option value="">— Descripción manual —</option>
-                {avatarList.map((av) => (
-                  <option key={av.id} value={av.id}>
-                    {av.bundled ? "★ " : ""}{av.name}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <Btn
-              type="button"
-              className="shrink-0 bg-violet-600 text-white hover:bg-violet-700"
-              disabled={generationRunning}
-              onClick={openNewAvatarEditor}
+              onChange={(e) => setTargetGenerator(e.target.value as TargetGenerator)}
             >
-              + Nuevo avatar
-            </Btn>
-            {selectedAvatarFull && !selectedAvatarFull.bundled && (
-              <>
-                <Btn
-                  type="button"
-                  className="shrink-0 bg-white text-violet-800 ring-1 ring-violet-300 hover:bg-violet-50"
-                  disabled={generationRunning}
-                  onClick={() => openEditAvatarEditor(selectedAvatarFull)}
-                >
-                  Editar
-                </Btn>
-                <Btn
-                  type="button"
-                  className="shrink-0 bg-white text-red-700 ring-1 ring-red-200 hover:bg-red-50"
-                  disabled={generationRunning}
-                  onClick={() => void deleteSelectedAvatar()}
-                >
-                  Borrar
-                </Btn>
-              </>
-            )}
+              <option value="midjourney">Midjourney</option>
+              <option value="flux">Flux</option>
+              <option value="dall_e">DALL·E</option>
+              <option value="sd">Stable Diffusion / SDXL</option>
+              <option value="custom">Personalizado (solo JSON / export manual)</option>
+            </Select>
           </div>
 
-          {/* Descripción del avatar seleccionado */}
-          {selectedAvatarFull ? (
-            <div className="rounded-lg border border-violet-100 bg-white px-3 py-2 text-[11px] text-violet-900 space-y-1">
-              <div className="font-semibold">{selectedAvatarFull.name}</div>
-              <div className="leading-snug text-violet-700">{selectedAvatarFull.description}</div>
-              {selectedAvatarFull.expressions.length > 0 && (
-                <div className="flex flex-wrap gap-1 pt-0.5">
-                  {selectedAvatarFull.expressions.map((e) => (
-                    <span key={e} className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-mono text-violet-800">
-                      {e}
-                    </span>
-                  ))}
+          {(showMidjourneySuffixOption || showExportNegativeOption) && (
+            <div className="space-y-2">
+              {showMidjourneySuffixOption && (
+                <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-700 bg-slate-900/40 px-3 py-2.5">
+                  <span className="text-xs text-slate-300">
+                    Añadir sufijo Midjourney desde <code className="rounded bg-slate-700 px-1 text-slate-200">global_style</code>
+                  </span>
+                  <IosSwitch
+                    checked={appendMjSuffix}
+                    onChange={setAppendMjSuffix}
+                    disabled={generationRunning}
+                    aria-label="Añadir sufijo Midjourney desde global_style"
+                  />
                 </div>
               )}
-              {selectedAvatarFull.style_notes && (
-                <div className="text-violet-500 italic">{selectedAvatarFull.style_notes}</div>
+              {showExportNegativeOption && (
+                <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-700 bg-slate-900/40 px-3 py-2.5">
+                  <span className="text-xs text-slate-300">
+                    Exportar <code className="rounded bg-slate-700 px-1 text-slate-200">negative_prompt</code> por separado (Flux / SD)
+                  </span>
+                  <IosSwitch
+                    checked={exportNegativeSeparate}
+                    onChange={setExportNegativeSeparate}
+                    disabled={generationRunning}
+                    aria-label="Exportar negative_prompt por separado"
+                  />
+                </div>
               )}
-              <div className={`flex items-center gap-1.5 pt-0.5 ${selectedAvatarFull.intro_enabled ? "text-violet-800" : "text-violet-400"}`}>
-                <span className={`inline-block h-2 w-2 rounded-full ${selectedAvatarFull.intro_enabled ? "bg-violet-500" : "bg-slate-300"}`} />
-                {selectedAvatarFull.intro_enabled
-                  ? <>Coletilla de <strong>presentación</strong> activa — personaje: <strong>{selectedAvatarFull.intro_character_name}</strong></>
-                  : "Coletilla de presentación desactivada"}
-              </div>
-              <div className={`flex items-center gap-1.5 ${selectedAvatarFull.outro_enabled ? "text-violet-800" : "text-violet-400"}`}>
-                <span className={`inline-block h-2 w-2 rounded-full ${selectedAvatarFull.outro_enabled ? "bg-violet-500" : "bg-slate-300"}`} />
-                {selectedAvatarFull.outro_enabled
-                  ? <>Coletilla de <strong>cierre</strong> activa — personaje: <strong>{selectedAvatarFull.outro_character_name}</strong></>
-                  : "Coletilla de cierre desactivada"}
-              </div>
-            </div>
-          ) : (
-            /* Descripción manual si no hay avatar del store */
-            <div>
-              <Label>Descripción manual del avatar (para el prompt IA)</Label>
-              <TextArea
-                value={AVATAR_DEFAULT_DESCRIPTION}
-                disabled
-                className="min-h-[52px] text-xs opacity-60"
-              />
-              <div className="mt-0.5 text-[10px] text-violet-600">
-                Selecciona un avatar del desplegable o crea uno nuevo para editarlo.
-              </div>
             </div>
           )}
-        </div>
 
-        {/* Ritmo */}
-        <div className="grid gap-2 sm:grid-cols-2">
-          <div>
-            <Label>Segundos de narración por imagen</Label>
-            <input
-              type="number" min={2} max={30} step={0.5}
-              value={avatarSecsPerImage}
-              disabled={generationRunning}
-              onChange={(e) => setAvatarSecsPerImage(parseFloat(e.target.value) || 6)}
-              className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-violet-400"
-            />
-            {estimatedLabel && (
-              <div className="mt-0.5 text-[10px] text-violet-700">{estimatedLabel}</div>
-            )}
-          </div>
-          <div>
-            <Label>Máximo de imágenes</Label>
-            <input
-              type="number" min={1} max={300} step={1}
-              value={avatarMaxImages}
-              disabled={generationRunning}
-              onChange={(e) => setAvatarMaxImages(parseInt(e.target.value, 10) || 80)}
-              className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-violet-400"
-            />
-            <div className="mt-0.5 text-[10px] text-violet-700">
-              Limita las llamadas a la API de generación de imágenes.
-            </div>
-          </div>
-        </div>
+          {!showMidjourneySuffixOption && !showExportNegativeOption && (
+            <p className="text-[11px] leading-snug text-slate-500">
+              Para este generador no hay opciones extra aquí: elige Midjourney para el sufijo en <code className="rounded bg-slate-800 px-1">global_style</code>, o Flux / Stable Diffusion para el modo de <code className="rounded bg-slate-800 px-1">negative_prompt</code> separado.
+            </p>
+          )}
 
-        <div className="flex flex-wrap items-center gap-2">
-          <Btn
-            type="button"
-            className="bg-violet-700 text-white hover:bg-violet-800 disabled:opacity-40"
-            disabled={generationRunning || !useAvatar}
-            onClick={() =>
-              run("Guardar ajustes + Generar prompts con Avatar", async () => {
-                await saveSettings();
-                await postJson("/api/pipeline/avatar-prompts/generate", { work: workApplied });
-                await refreshPipeline();
-              })
-            }
-          >
-            Generar prompts con Avatar
+          <div>
+            <Label>Notas internas</Label>
+            <Input value={settingsNotes} disabled={generationRunning}
+              onChange={(e) => setSettingsNotes(e.target.value)}
+              placeholder="Ej.: usar solo planos macro en Acto 3…" />
+          </div>
+          <Btn type="button" className="bg-white text-slate-900 hover:bg-slate-100 disabled:opacity-40" disabled={generationRunning}
+            onClick={() => run("Guardar ajustes Image Prompt Writer", saveSettings)}>
+            Guardar ajustes
           </Btn>
-          {!useAvatar && (
-            <span className="text-[11px] text-violet-600">Activa el modo avatar para usar este botón.</span>
-          )}
-          {estimatedPrompts !== null && (
-            <span className="text-[11px] text-violet-800">
-              Bundle actual: <strong>{estimatedPrompts}</strong> prompts
-            </span>
-          )}
         </div>
+      </Section>
+
+      <Section
+        id="ipw-import"
+        badge="2"
+        title="Importar desde otros pasos"
+        description="Rellena o sustituye el bundle a partir del Hook Scene Router o de las ideas de miniatura en Metadata (sin avatar; para miniaturas con personaje usa Metadata paso 3)."
+      >
+        <div className="flex flex-wrap gap-2">
+          <Btn type="button" className="bg-white text-slate-900 hover:bg-slate-100 disabled:opacity-40"
+            disabled={generationRunning}
+            onClick={() => run("Hook Router → image_prompts", async () => {
+              await postJson("/api/pipeline/hook-router/push-to-image-prompts", { work: workApplied });
+              await loadBundle(); await refreshPipeline();
+            })}>
+            Fusionar desde Hook Scene Router
+          </Btn>
+          <Btn type="button" className="border border-slate-500 bg-slate-700 text-slate-200 hover:bg-slate-600 disabled:opacity-40"
+            disabled={generationRunning}
+            onClick={() => run("Metadata miniaturas → image_prompts", async () => {
+              await postJson("/api/pipeline/metadata/push-thumbnails-to-images", { work: workApplied, include_avatar: false });
+              await loadBundle(); await refreshPipeline();
+            })}>
+            Reemplazar por ideas de miniatura (Metadata)
+          </Btn>
+        </div>
+      </Section>
+
+      <div className="rounded-xl border border-slate-600 bg-slate-800/50 px-4 py-3 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <span className="shrink-0 rounded bg-slate-600 px-1.5 py-0.5 text-[10px] font-mono text-slate-300">3</span>
+              <span className="text-sm font-semibold tracking-wide text-white">Modo avatar</span>
+              <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">Opcional</span>
+            </div>
+            <p className="mt-1 text-[11px] leading-snug text-slate-400">
+              Un prompt por segmento de narración con el personaje del canal. Activa el interruptor solo si quieres este flujo además o en lugar del import del paso 2.
+            </p>
+          </div>
+          <IosSwitch
+            checked={useAvatar}
+            onChange={setUseAvatar}
+            disabled={generationRunning}
+            aria-label="Activar modo avatar"
+          />
+        </div>
+
+        {useAvatar && (
+          <div className="space-y-3 border-t border-slate-700 pt-3">
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="min-w-[200px] flex-1">
+                  <Label>Avatar seleccionado</Label>
+                  <Select
+                    value={selectedAvatarId}
+                    disabled={generationRunning}
+                    onChange={(e) => setSelectedAvatarId(e.target.value)}
+                  >
+                    <option value="">— Descripción manual —</option>
+                    {avatarList.map((av) => (
+                      <option key={av.id} value={av.id}>
+                        {av.bundled ? "★ " : ""}{av.name}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                <Btn
+                  type="button"
+                  className="shrink-0 border border-violet-500/50 bg-violet-950/40 text-violet-200 hover:bg-violet-900/50"
+                  disabled={generationRunning}
+                  onClick={openNewAvatarEditor}
+                >
+                  + Nuevo avatar
+                </Btn>
+                {selectedAvatarFull && !selectedAvatarFull.bundled && (
+                  <>
+                    <Btn
+                      type="button"
+                      className="shrink-0 border border-slate-500 bg-slate-700 text-slate-200 hover:bg-slate-600"
+                      disabled={generationRunning}
+                      onClick={() => openEditAvatarEditor(selectedAvatarFull)}
+                    >
+                      Editar
+                    </Btn>
+                    <Btn
+                      type="button"
+                      className="shrink-0 border border-rose-500/40 bg-rose-950/30 text-rose-200 hover:bg-rose-950/50"
+                      disabled={generationRunning}
+                      onClick={() => void deleteSelectedAvatar()}
+                    >
+                      Borrar
+                    </Btn>
+                  </>
+                )}
+              </div>
+
+              {selectedAvatarFull ? (
+                <div className="rounded-lg border border-slate-600 bg-slate-800/80 px-3 py-2 text-[11px] text-slate-300 space-y-1.5">
+                  <div className="font-semibold text-white">{selectedAvatarFull.name}</div>
+                  <div className="leading-snug text-slate-400">{selectedAvatarFull.description}</div>
+                  {selectedAvatarFull.expressions.length > 0 && (
+                    <div className="flex flex-wrap gap-1 pt-0.5">
+                      {selectedAvatarFull.expressions.map((e) => (
+                        <span key={e} className="rounded bg-slate-700 px-1.5 py-0.5 text-[10px] font-mono text-slate-300">
+                          {e}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {selectedAvatarFull.style_notes && (
+                    <div className="text-slate-500 italic">{selectedAvatarFull.style_notes}</div>
+                  )}
+                  <div className={`flex items-center gap-1.5 pt-0.5 ${selectedAvatarFull.intro_enabled ? "text-slate-200" : "text-slate-500"}`}>
+                    <span className={`inline-block h-2 w-2 rounded-full ${selectedAvatarFull.intro_enabled ? "bg-violet-400" : "bg-slate-600"}`} />
+                    {selectedAvatarFull.intro_enabled
+                      ? <>Coletilla de <strong className="text-white">presentación</strong> — <strong>{selectedAvatarFull.intro_character_name}</strong></>
+                      : "Coletilla de presentación desactivada"}
+                  </div>
+                  <div className={`flex items-center gap-1.5 ${selectedAvatarFull.outro_enabled ? "text-slate-200" : "text-slate-500"}`}>
+                    <span className={`inline-block h-2 w-2 rounded-full ${selectedAvatarFull.outro_enabled ? "bg-emerald-400" : "bg-slate-600"}`} />
+                    {selectedAvatarFull.outro_enabled
+                      ? <>Coletilla de <strong className="text-white">cierre</strong> — <strong>{selectedAvatarFull.outro_character_name}</strong></>
+                      : "Coletilla de cierre desactivada"}
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <Label>Descripción manual del avatar</Label>
+                  <TextArea
+                    value={AVATAR_DEFAULT_DESCRIPTION}
+                    disabled
+                    className="min-h-[52px] !cursor-not-allowed !border-slate-600 !bg-slate-800/50 !text-slate-500 !text-xs"
+                  />
+                  <p className="mt-1 text-[10px] text-slate-500">
+                    Selecciona un avatar del desplegable o crea uno nuevo para editarlo.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <Label>Segundos de narración por imagen</Label>
+                <Input
+                  type="number"
+                  min={2}
+                  max={30}
+                  step={0.5}
+                  value={avatarSecsPerImage}
+                  disabled={generationRunning}
+                  onChange={(e) => setAvatarSecsPerImage(parseFloat(e.target.value) || 6)}
+                  className="!mt-1 !rounded-lg !border-slate-600 !bg-slate-700 !text-sm !text-slate-200 focus:!border-slate-400"
+                />
+                {estimatedLabel && (
+                  <div className="mt-0.5 text-[10px] text-slate-500">{estimatedLabel}</div>
+                )}
+              </div>
+              <div>
+                <Label>Máximo de imágenes</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={300}
+                  step={1}
+                  value={avatarMaxImages}
+                  disabled={generationRunning}
+                  onChange={(e) => setAvatarMaxImages(parseInt(e.target.value, 10) || 80)}
+                  className="!mt-1 !rounded-lg !border-slate-600 !bg-slate-700 !text-sm !text-slate-200 focus:!border-slate-400"
+                />
+                <div className="mt-0.5 text-[10px] text-slate-500">
+                  Limita las llamadas al LLM y a la API de generación de imágenes.
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Btn
+                type="button"
+                className="bg-white text-slate-900 hover:bg-slate-100 disabled:opacity-40"
+                disabled={generationRunning}
+                onClick={() =>
+                  run("Guardar ajustes + Generar prompts con Avatar", async () => {
+                    await saveSettings();
+                    await postJson("/api/pipeline/avatar-prompts/generate", { work: workApplied });
+                    await refreshPipeline();
+                  })
+                }
+              >
+                Guardar ajustes y generar prompts con Avatar
+              </Btn>
+              {estimatedPrompts !== null && (
+                <span className="text-[11px] text-slate-400">
+                  En disco: <strong className="text-slate-200">{estimatedPrompts}</strong> prompts
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {!useAvatar && (
+          <p className="border-t border-slate-700 pt-2 text-[11px] text-slate-500">
+            Con el modo desactivado no se generan prompts por segmento aquí; usa el paso 2 o Start step según tu flujo.
+          </p>
+        )}
       </div>
 
-      {/* ── Avatar Editor (inline) ──────────────────────────── */}
       {showAvatarEditor && (
-        <div className="rounded-xl border border-violet-300 bg-violet-50 p-3 space-y-3 shadow-sm">
-          <div className="text-xs font-semibold text-violet-900">
+        <div className="rounded-xl border border-slate-600 bg-slate-800/90 p-4 space-y-3 shadow-md">
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-300">
             {editingAvatarId ? "Editar avatar" : "Nuevo avatar"}
           </div>
           <div>
@@ -669,10 +803,10 @@ export function ImagePromptWriterPanel({
             <TextArea
               value={editorDescription}
               onChange={(e) => setEditorDescription(e.target.value)}
-              className="min-h-[80px] text-xs"
+              className="min-h-[80px] !border-slate-600 !bg-slate-700 !text-xs !text-slate-200"
               placeholder="Describe el avatar tal como quieres que aparezca en cada imagen…"
             />
-            <div className="mt-0.5 text-[10px] text-violet-600">
+            <div className="mt-0.5 text-[10px] text-slate-500">
               Incluye rasgos físicos, ropa, estilo de ilustración y color de contorno.
             </div>
           </div>
@@ -685,20 +819,22 @@ export function ImagePromptWriterPanel({
             />
           </div>
 
-          {/* Coletilla de presentación */}
-          <div className="rounded-lg border border-violet-200 bg-violet-50/80 p-2.5 space-y-2">
-            <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-violet-900">
-              <input
-                type="checkbox"
+          <div className="rounded-lg border border-slate-600 bg-slate-800/80 p-2.5 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold text-slate-200">
+                  Coletilla de <span className="text-white">presentación</span> (tras el hook)
+                </div>
+                <p className="mt-0.5 text-[10px] leading-snug text-slate-400">
+                  Una imagen donde el personaje se presenta y adelanta el tema.
+                </p>
+              </div>
+              <IosSwitch
                 checked={editorIntroEnabled}
-                onChange={(e) => setEditorIntroEnabled(e.target.checked)}
+                onChange={setEditorIntroEnabled}
+                aria-label="Activar coletilla de presentación"
               />
-              Activar coletilla de <strong>presentación</strong> (tras el hook)
-            </label>
-            <p className="text-[10px] leading-snug text-violet-700">
-              Genera 1 imagen donde el personaje se presenta y adelanta el tema,{" "}
-              justo después del gancho.
-            </p>
+            </div>
             {editorIntroEnabled && (
               <div>
                 <Label>Nombre del personaje</Label>
@@ -707,27 +843,29 @@ export function ImagePromptWriterPanel({
                   onChange={(e) => setEditorIntroCharacterName(e.target.value)}
                   placeholder={`Por defecto: "${editorName || "nombre del avatar"}"`}
                 />
-                <div className="mt-0.5 text-[10px] text-violet-600">
+                <div className="mt-0.5 text-[10px] text-slate-500">
                   Ej.: "Nerd", "Alex". El LLM usará este nombre en el texto generado.
                 </div>
               </div>
             )}
           </div>
 
-          {/* Coletilla de cierre */}
-          <div className="rounded-lg border border-violet-200 bg-violet-50/80 p-2.5 space-y-2">
-            <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-violet-900">
-              <input
-                type="checkbox"
+          <div className="rounded-lg border border-slate-600 bg-slate-800/80 p-2.5 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold text-slate-200">
+                  Coletilla de <span className="text-white">cierre</span> (suscripción + like)
+                </div>
+                <p className="mt-0.5 text-[10px] leading-snug text-slate-400">
+                  Una imagen al final pidiendo suscripción y like de forma natural.
+                </p>
+              </div>
+              <IosSwitch
                 checked={editorOutroEnabled}
-                onChange={(e) => setEditorOutroEnabled(e.target.checked)}
+                onChange={setEditorOutroEnabled}
+                aria-label="Activar coletilla de cierre"
               />
-              Activar coletilla de <strong>cierre</strong> (suscripción + like)
-            </label>
-            <p className="text-[10px] leading-snug text-violet-700">
-              Genera 1 imagen al final del vídeo donde el personaje pide suscripción y like
-              de forma natural y cercana.
-            </p>
+            </div>
             {editorOutroEnabled && (
               <div>
                 <Label>Nombre del personaje</Label>
@@ -736,24 +874,24 @@ export function ImagePromptWriterPanel({
                   onChange={(e) => setEditorOutroCharacterName(e.target.value)}
                   placeholder={`Por defecto: "${editorName || "nombre del avatar"}"`}
                 />
-                <div className="mt-0.5 text-[10px] text-violet-600">
+                <div className="mt-0.5 text-[10px] text-slate-500">
                   Ej.: "Nerd", "Alex". El LLM generará la frase de cierre con este nombre.
                 </div>
               </div>
             )}
           </div>
 
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Btn
               type="button"
-              className="bg-violet-700 text-white hover:bg-violet-800"
+              className="bg-white text-slate-900 hover:bg-slate-100"
               onClick={() => run("Guardar avatar", saveAvatarEditor)}
             >
               Guardar avatar
             </Btn>
             <Btn
               type="button"
-              className="bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
+              className="border border-slate-500 bg-slate-700 text-slate-200 hover:bg-slate-600"
               onClick={() => setShowAvatarEditor(false)}
             >
               Cancelar
@@ -762,187 +900,103 @@ export function ImagePromptWriterPanel({
         </div>
       )}
 
-      {/* ── General Settings ───────────────────────────────── */}
-      <div className="space-y-3 rounded-xl border border-cyan-200 bg-cyan-50/70 p-3">
-        <div className="text-xs font-semibold uppercase tracking-wide text-cyan-950">
-          Configuración (persistida en pipeline)
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div>
-            <Label>Generador objetivo</Label>
-            <Select
-              value={targetGenerator}
-              disabled={generationRunning}
-              onChange={(e) => setTargetGenerator(e.target.value as TargetGenerator)}
-            >
-              <option value="midjourney">Midjourney</option>
-              <option value="flux">Flux</option>
-              <option value="dall_e">DALL·E</option>
-              <option value="sd">Stable Diffusion / SDXL</option>
-              <option value="custom">Personalizado (solo JSON / export manual)</option>
-            </Select>
-          </div>
-          <div className="flex flex-col justify-end gap-2 text-xs text-cyan-950">
-            <label className="flex cursor-pointer items-center gap-2">
-              <input type="checkbox" checked={appendMjSuffix} disabled={generationRunning}
-                onChange={(e) => setAppendMjSuffix(e.target.checked)} />
-              Añadir sufijo Midjourney desde <code className="rounded bg-white px-1">global_style</code>
-            </label>
-            <label className="flex cursor-pointer items-center gap-2">
-              <input type="checkbox" checked={exportNegativeSeparate} disabled={generationRunning}
-                onChange={(e) => setExportNegativeSeparate(e.target.checked)} />
-              Exportar <code className="rounded bg-white px-1">negative_prompt</code> por separado (SD/Flux)
-            </label>
-          </div>
-        </div>
-        <div>
-          <Label>Notas internas</Label>
-          <Input value={settingsNotes} disabled={generationRunning}
-            onChange={(e) => setSettingsNotes(e.target.value)}
-            placeholder="Ej.: usar solo planos macro en Acto 3…" />
-        </div>
-        <Btn type="button" className="bg-cyan-800 text-white hover:bg-cyan-900" disabled={generationRunning}
-          onClick={() => run("Guardar ajustes Image Prompt Writer", saveSettings)}>
-          Guardar ajustes
-        </Btn>
-      </div>
-
-      <div className="rounded-xl border border-slate-600 bg-slate-800 p-3 text-xs text-slate-400">
-        <div className="font-semibold text-white">Estructura del JSON</div>
-        <ul className="mt-2 list-disc space-y-1 pl-4">
-          <li><code className="rounded bg-slate-700 px-1">version</code>, <code className="rounded bg-slate-700 px-1">source</code>, <code className="rounded bg-slate-700 px-1">global_style</code></li>
+      <div className="rounded-xl border border-slate-600 bg-slate-800/60 px-4 py-3">
+        <div className="text-xs font-semibold text-slate-300">Referencia · campos del JSON</div>
+        <p className="mt-1 text-[11px] text-slate-500">Lo que espera el paso de imágenes y exportaciones externas.</p>
+        <ul className="mt-2 list-disc space-y-1 pl-4 text-[11px] leading-relaxed text-slate-400">
+          <li><code className="rounded bg-slate-700 px-1 text-slate-200">version</code>, <code className="rounded bg-slate-700 px-1 text-slate-200">source</code>, <code className="rounded bg-slate-700 px-1 text-slate-200">global_style</code></li>
           <li>
-            <code className="rounded bg-slate-700 px-1">prompts[]</code>: <code className="rounded bg-slate-700 px-1">id</code>, <code className="rounded bg-slate-700 px-1">act</code>, <code className="rounded bg-slate-700 px-1">expression</code>,{" "}
-            <code className="rounded bg-slate-700 px-1">situation</code>, <code className="rounded bg-slate-700 px-1">ai_prompt</code>, <code className="rounded bg-slate-700 px-1">negative_prompt</code>, <code className="rounded bg-slate-700 px-1">segment_text</code>
+            <code className="rounded bg-slate-700 px-1 text-slate-200">prompts[]</code>: <code className="rounded bg-slate-700 px-1 text-slate-200">id</code>, <code className="rounded bg-slate-700 px-1 text-slate-200">act</code>, <code className="rounded bg-slate-700 px-1 text-slate-200">expression</code>,{" "}
+            <code className="rounded bg-slate-700 px-1 text-slate-200">situation</code>, <code className="rounded bg-slate-700 px-1 text-slate-200">ai_prompt</code>, <code className="rounded bg-slate-700 px-1 text-slate-200">negative_prompt</code>, <code className="rounded bg-slate-700 px-1 text-slate-200">segment_text</code>
           </li>
-          <li>Formato legacy: <code className="rounded bg-slate-700 px-1">role</code> + <code className="rounded bg-slate-700 px-1">text</code> (sigue siendo válido)</li>
+          <li>Formato legacy: <code className="rounded bg-slate-700 px-1 text-slate-200">role</code> + <code className="rounded bg-slate-700 px-1 text-slate-200">text</code> (válido)</li>
         </ul>
       </div>
 
-      <div className="flex flex-wrap gap-2 rounded-xl border border-slate-600 bg-gradient-to-r from-slate-800 to-slate-700 px-3 py-2">
-        <Btn type="button" className="bg-white text-slate-900 hover:bg-slate-100 disabled:opacity-40"
-          disabled={generationRunning}
-          onClick={() => run("Hook Router → image_prompts", async () => {
-            await postJson("/api/pipeline/hook-router/push-to-image-prompts", { work: workApplied });
-            await loadBundle(); await refreshPipeline();
-          })}>
-          Fusionar desde Hook Scene Router
-        </Btn>
-        <Btn type="button" className="border border-slate-500 bg-slate-700 text-slate-200 hover:bg-slate-600 disabled:opacity-40"
-          disabled={generationRunning}
-          onClick={() => run("Metadata miniaturas → image_prompts", async () => {
-            await postJson("/api/pipeline/metadata/push-thumbnails-to-images", { work: workApplied });
-            await loadBundle(); await refreshPipeline();
-          })}>
-          Reemplazar por ideas de miniatura (Metadata)
-        </Btn>
-      </div>
-
-      {/* ── Prompt editor: Cards / JSON ──────────────────────── */}
-      {(() => {
-        // Parse prompts from jsonText for card view
-        let parsedBundle: Record<string, unknown> | null = null;
-        let parsedPrompts: PromptItem[] = [];
-        try {
-          const b = JSON.parse(jsonText) as Record<string, unknown>;
-          parsedBundle = b;
-          if (Array.isArray(b.prompts)) parsedPrompts = b.prompts as PromptItem[];
-        } catch { /* invalid json */ }
-
-        const updatePromptAt = (index: number, updated: PromptItem) => {
-          if (!parsedBundle) return;
-          const newPrompts = [...parsedPrompts];
-          newPrompts[index] = updated;
-          const newBundle = { ...parsedBundle, prompts: newPrompts };
-          setJsonText(JSON.stringify(newBundle, null, 2));
-          setExpandedId(null);
-        };
-
-        return (
-          <div className="space-y-2">
-            {/* Toolbar */}
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-1">
-                <span className="text-xs font-medium text-slate-600">
-                  pipeline/image_prompts.json
-                </span>
-                {parsedPrompts.length > 0 && (
-                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
-                    {parsedPrompts.length} prompts
-                  </span>
-                )}
-              </div>
-              <div className="flex gap-1.5">
-                <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs">
-                  <button
-                    type="button"
-                    className={`px-2.5 py-1 transition-colors ${viewMode === "cards" ? "bg-slate-900 text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}
-                    onClick={() => setViewMode("cards")}
-                  >
-                    Tarjetas
-                  </button>
-                  <button
-                    type="button"
-                    className={`px-2.5 py-1 transition-colors ${viewMode === "json" ? "bg-slate-900 text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}
-                    onClick={() => setViewMode("json")}
-                  >
-                    JSON
-                  </button>
-                </div>
-                <Btn type="button" className="bg-white text-slate-900 ring-1 ring-slate-200 hover:bg-slate-50"
-                  onClick={() => void loadBundle()}>
-                  Recargar
-                </Btn>
-                <Btn type="button" className="bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-40"
-                  disabled={generationRunning || !jsonText.trim()}
-                  onClick={() => run("Guardar image_prompts.json", saveBundle)}>
-                  Guardar y marcar listo
-                </Btn>
-              </div>
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm font-semibold tracking-wider capitalize text-white">Salida · image_prompts.json</div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <div className="flex overflow-hidden rounded-lg border border-slate-600 text-xs">
+              <button
+                type="button"
+                className={`px-2.5 py-1 transition-colors ${viewMode === "cards" ? "bg-white text-slate-900" : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200"}`}
+                onClick={() => setViewMode("cards")}
+              >
+                Tarjetas
+              </button>
+              <button
+                type="button"
+                className={`px-2.5 py-1 transition-colors ${viewMode === "json" ? "bg-white text-slate-900" : "bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200"}`}
+                onClick={() => setViewMode("json")}
+              >
+                JSON
+              </button>
             </div>
-
-            {/* Card view */}
-            {viewMode === "cards" && (
-              parsedPrompts.length > 0 ? (
-                <div className="space-y-1 max-h-[620px] overflow-y-auto rounded-xl border border-slate-600 bg-slate-800 p-2">
-                  {parsedPrompts.map((item, i) => {
-                    const cardKey = item.id != null ? String(item.id) : String(i);
-                    return (
-                      <PromptCard
-                        key={cardKey}
-                        item={item}
-                        index={i}
-                        expanded={expandedId === cardKey}
-                        onToggle={() => setExpandedId(expandedId === cardKey ? null : cardKey)}
-                        onSave={(updated) => updatePromptAt(i, updated)}
-                        readOnly={generationRunning}
-                      />
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="rounded-xl border border-dashed border-slate-600 bg-slate-700/30 px-4 py-6 text-center text-xs text-slate-500">
-                  {hasBundle
-                    ? "El bundle no contiene prompts en el array esperado."
-                    : "Aún no hay bundle. Ejecuta «Start step», genera prompts de Avatar, o fusiona desde Hook Router / Metadata."}
-                </div>
-              )
-            )}
-
-            {/* JSON view */}
-            {viewMode === "json" && (
-              <TextArea
-                readOnly={generationRunning}
-                value={jsonText}
-                onChange={(e) => setJsonText(e.target.value)}
-                spellCheck={false}
-                className="min-h-[380px] font-mono text-xs"
-                placeholder={hasBundle ? "" : "Aún no hay bundle."}
-              />
-            )}
+            <Btn type="button" className="border border-slate-600 bg-slate-800 text-slate-200 hover:bg-slate-700"
+              onClick={() => void loadBundle()}>
+              Recargar desde disco
+            </Btn>
+            <Btn type="button" className="bg-white text-slate-900 hover:bg-slate-100 disabled:opacity-40"
+              disabled={generationRunning || !jsonText.trim()}
+              onClick={() => run("Guardar image_prompts.json", saveBundle)}>
+              Guardar y marcar listo
+            </Btn>
           </div>
-        );
-      })()}
+        </div>
+
+        {parsedPrompts.length > 0 && (
+          <div className="text-[11px] text-slate-500">
+            <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-slate-400">{parsedPrompts.length}</span>
+            {" "}prompts en el array actual
+          </div>
+        )}
+
+        {viewMode === "cards" && (
+          parsedPrompts.length > 0 ? (
+            <div className="space-y-1 max-h-[620px] overflow-y-auto rounded-xl border border-slate-600 bg-slate-800 p-2 shadow-inner">
+              {parsedPrompts.map((item, i) => {
+                const cardKey = item.id != null ? String(item.id) : String(i);
+                return (
+                  <PromptCard
+                    key={cardKey}
+                    item={item}
+                    index={i}
+                    expanded={expandedId === cardKey}
+                    onToggle={() => setExpandedId(expandedId === cardKey ? null : cardKey)}
+                    onSave={(updated) => updatePromptAt(i, updated)}
+                    readOnly={generationRunning}
+                  />
+                );
+              })}
+            </div>
+          ) : (
+            <div className="min-h-[120px] rounded-xl border border-dashed border-slate-600 bg-slate-800 px-4 py-6 text-center text-xs text-slate-500 shadow-inner"
+            >
+              {hasBundle
+                ? "El bundle no contiene prompts en el array esperado."
+                : "Aún no hay bundle. Completa los pasos 1–3 o ejecuta «Start step» en la tarjeta del paso."}
+            </div>
+          )
+        )}
+
+        {viewMode === "json" && (
+          <>
+            <ExpandableTextArea
+              value={jsonText}
+              onChange={setJsonText}
+              placeholder={hasBundle ? "" : "Aún no hay bundle."}
+              modalTitle="pipeline/image_prompts.json"
+              variant="output"
+              disabled={generationRunning}
+              disabledTitle={generationRunning ? "No disponible mientras se genera" : undefined}
+            />
+            <p className="text-[11px] leading-snug text-slate-500">
+              Clic en el recuadro o «✎ editar» para pantalla completa. Confirma con <strong className="text-slate-300">Guardar y marcar listo</strong> para escribir disco.
+            </p>
+          </>
+        )}
+      </div>
     </div>
   );
 }

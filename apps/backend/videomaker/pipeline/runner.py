@@ -682,9 +682,29 @@ def _run_step_metadata(work_dir: Path, inputs: PipelineInputs, script_text: str)
     _write_json(out, wrap_metadata_bundle(inner))
 
 
-def push_thumbnail_ideas_to_image_prompts(work_dir: Path) -> dict[str, Any]:
+def _infer_thumbnail_expression(text: str) -> str:
+    """Infiere la expresión del avatar más adecuada para una idea de miniatura."""
+    t = text.lower()
+    if any(w in t for w in ("shock", "sorpresa", "increíble", "?!", "¿por qué", "error", "coste", "pérdida", "pierde", "pierdes")):
+        return "surprised"
+    if any(w in t for w in ("gráfica", "dato", "estadística", "número", "porcentaje", "%", "cómo", "explica", "guía")):
+        return "explaining"
+    if any(w in t for w in ("reflexi", "pensand", "¿", "mira", "seria", "documental", "cámara")):
+        return "thinking"
+    if any(w in t for w in ("éxito", "libre", "logr", "independencia", "objetivo", "meta")):
+        return "excited"
+    return "neutral"
+
+
+def push_thumbnail_ideas_to_image_prompts(
+    work_dir: Path,
+    *,
+    include_avatar: bool = False,
+) -> dict[str, Any]:
     """
     Copia `editorial.thumbnail_ideas` de metadata.json → image_prompts.json para el paso de imágenes.
+    Si `include_avatar=True` enriquece cada prompt con la descripción del avatar configurado en
+    image_prompt_writer_settings, añadiendo al sujeto principal de la imagen y una expresión inferida.
     """
     from videomaker.core.metadata_settings_store import read_metadata_settings
 
@@ -699,11 +719,47 @@ def push_thumbnail_ideas_to_image_prompts(work_dir: Path) -> dict[str, Any]:
     thumbs = ed.get("thumbnail_ideas") if isinstance(ed, dict) else None
     if not isinstance(thumbs, list):
         thumbs = []
+
+    # Resolver avatar si se solicita
+    avatar_description: str | None = None
+    avatar_name: str | None = None
+    if include_avatar:
+        from videomaker.core.image_prompt_writer_settings_store import read_image_prompt_writer_settings
+        from videomaker.core.avatars_store import get_avatar
+        from videomaker.llm.avatar_prompt_writer import AVATAR_DEFAULT_DESCRIPTION, AVATAR_EXPRESSIONS
+
+        ipw_st = read_image_prompt_writer_settings(work_dir)
+        avatar_id = str(ipw_st.get("avatar_id") or "").strip()
+        if avatar_id:
+            av = get_avatar(avatar_id)
+            if av:
+                avatar_description = str(av.get("description") or AVATAR_DEFAULT_DESCRIPTION).strip()
+                avatar_name = str(av.get("name") or "").strip() or None
+        if not avatar_description:
+            avatar_description = str(ipw_st.get("avatar_description") or AVATAR_DEFAULT_DESCRIPTION).strip()
+
+        expressions_block = "\n".join(
+            f"- {k}: {v}" for k, v in AVATAR_EXPRESSIONS.items()
+        )
+
     prompts: list[dict[str, Any]] = []
     for i, t in enumerate(thumbs):
         s = str(t).strip()
-        if s:
-            prompts.append({"role": "thumbnail", "index": i, "text": s})
+        if not s:
+            continue
+        entry: dict[str, Any] = {"role": "thumbnail", "index": i, "text": s}
+        if include_avatar and avatar_description:
+            expression = _infer_thumbnail_expression(s)
+            entry["avatar_description"] = avatar_description
+            entry["avatar_expression"] = expression
+            entry["text"] = (
+                f"{s}\n"
+                f"Avatar del canal (inclúyelo como sujeto principal en la miniatura): {avatar_description} "
+                f"— expresión: {expression} ({AVATAR_EXPRESSIONS.get(expression, expression)})."
+            )
+            if avatar_name:
+                entry["avatar_name"] = avatar_name
+        prompts.append(entry)
 
     if not prompts:
         raise ValueError(
@@ -715,15 +771,21 @@ def push_thumbnail_ideas_to_image_prompts(work_dir: Path) -> dict[str, Any]:
     if tp not in ("youtube", "tiktok", "reels"):
         tp = "youtube"
 
-    bundle = {
+    bundle: dict[str, Any] = {
         "version": 1,
         "source": "metadata_thumbnails",
         "target_platform": tp,
+        "include_avatar": include_avatar,
         "prompts": prompts,
     }
+    if include_avatar and avatar_description:
+        bundle["avatar_description"] = avatar_description
+        if avatar_name:
+            bundle["avatar_name"] = avatar_name
+
     out = _pipeline_dir(work_dir) / "image_prompts.json"
     _write_json(out, bundle)
-    return {"count": len(prompts), "path": "pipeline/image_prompts.json"}
+    return {"count": len(prompts), "path": "pipeline/image_prompts.json", "include_avatar": include_avatar}
 
 
 def _run_step_scene_router(

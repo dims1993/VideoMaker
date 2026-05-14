@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Btn, ExpandableTextArea, Input, Label, Select } from "../../../components/ui";
 import { PipelineSection as Section } from "../pipeline/PipelineSection";
 import type { RunFn } from "../types";

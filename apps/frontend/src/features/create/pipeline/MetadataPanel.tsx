@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Btn, Input, Label, Select, TextArea } from "../../../components/ui";
+import { useCallback, useEffect, useState } from "react";
+import { Btn, ExpandableTextArea, Label, Select } from "../../../components/ui";
 import { postJson, putJson } from "../../../services/api";
 import type { RunFn } from "../types";
 import { PipelineSection as Section } from "./PipelineSection";
@@ -21,22 +21,18 @@ export function MetadataPanel({
 }) {
   const [jsonText, setJsonText] = useState("");
   const [loaded, setLoaded] = useState(false);
-  const [fullscreen, setFullscreen] = useState(false);
-  const modalRef = useRef<HTMLTextAreaElement>(null);
   const generationRunning = metadataStepState === "running";
 
   const [targetPlatform, setTargetPlatform] = useState<PlatformId>("youtube");
   const [targetKeywords, setTargetKeywords] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
-  const [defaultSystemPrompt, setDefaultSystemPrompt] = useState("");
+  const [settingsHydrated, setSettingsHydrated] = useState(false);
 
-  useEffect(() => {
-    if (!fullscreen) return;
-    modalRef.current?.focus();
-    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") setFullscreen(false); };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [fullscreen]);
+  const [imagePromptsText, setImagePromptsText] = useState("");
+  const [imagePromptsLoaded, setImagePromptsLoaded] = useState(false);
+
+  const [includeAvatar, setIncludeAvatar] = useState(false);
+  const [avatarName, setAvatarName] = useState<string | null>(null);
 
   const loadMetadata = useCallback(async () => {
     const r = await fetch(`/api/pipeline/metadata?work=${encodeURIComponent(workApplied)}`);
@@ -48,28 +44,74 @@ export function MetadataPanel({
   }, [workApplied]);
 
   const hydrateSettings = useCallback(async () => {
+    setSettingsHydrated(false);
     const r = await fetch(`/api/pipeline/metadata-settings?work=${encodeURIComponent(workApplied)}&lang=${encodeURIComponent(lang)}`);
-    if (!r.ok) return;
-    const j = (await r.json()) as { target_platform?: string; target_keywords?: string; system_prompt?: string; default_system_prompt?: string };
+    if (!r.ok) {
+      setSettingsHydrated(true);
+      return;
+    }
+    const j = (await r.json()) as { target_platform?: string; target_keywords?: string; system_prompt?: string };
     if (j.target_platform === "youtube" || j.target_platform === "tiktok" || j.target_platform === "reels") setTargetPlatform(j.target_platform);
     if (j.target_keywords !== undefined) setTargetKeywords(j.target_keywords);
     if (j.system_prompt !== undefined) setSystemPrompt(j.system_prompt);
-    if (typeof j.default_system_prompt === "string") setDefaultSystemPrompt(j.default_system_prompt);
+    setSettingsHydrated(true);
   }, [workApplied, lang]);
 
-  const refreshDefaultPromptPreview = useCallback(async (p: PlatformId) => {
-    const r = await fetch(`/api/pipeline/metadata-settings?work=${encodeURIComponent(workApplied)}&lang=${encodeURIComponent(lang)}&preview_platform=${encodeURIComponent(p)}`);
+  const persistSettings = useCallback(async () => {
+    await putJson(`/api/pipeline/metadata-settings`, {
+      work: workApplied,
+      target_platform: targetPlatform,
+      target_keywords: targetKeywords,
+      system_prompt: systemPrompt.trim(),
+    });
+  }, [workApplied, targetPlatform, targetKeywords, systemPrompt]);
+
+  const loadAvatarInfo = useCallback(async () => {
+    const r = await fetch(`/api/pipeline/image-prompt-writer-settings?work=${encodeURIComponent(workApplied)}`);
     if (!r.ok) return;
-    const j = (await r.json()) as { default_system_prompt?: string };
-    if (typeof j.default_system_prompt === "string") setDefaultSystemPrompt(j.default_system_prompt);
-  }, [workApplied, lang]);
+    const j = (await r.json()) as { use_avatar?: boolean; avatar_id?: string; avatar_description?: string };
+    if (!j.use_avatar || !j.avatar_id) { setAvatarName(null); return; }
+    const ra = await fetch(`/api/avatars/${encodeURIComponent(j.avatar_id)}`);
+    if (!ra.ok) { setAvatarName(null); return; }
+    const av = (await ra.json()) as { name?: string };
+    setAvatarName(av.name ?? null);
+  }, [workApplied]);
+
+  const loadImagePrompts = useCallback(async () => {
+    const r = await fetch(`/api/pipeline/image-prompts?work=${encodeURIComponent(workApplied)}`);
+    if (!r.ok) { setImagePromptsText(""); setImagePromptsLoaded(false); return; }
+    const j = (await r.json()) as { exists?: boolean; bundle?: unknown };
+    if (j.exists && j.bundle) {
+      setImagePromptsText(JSON.stringify(j.bundle, null, 2));
+      setImagePromptsLoaded(true);
+    } else {
+      setImagePromptsText(""); setImagePromptsLoaded(false);
+    }
+  }, [workApplied]);
 
   useEffect(() => { void loadMetadata(); }, [loadMetadata, metadataStepState, workApplied]);
   useEffect(() => { void hydrateSettings(); }, [hydrateSettings]);
+  useEffect(() => { void loadImagePrompts(); }, [loadImagePrompts]);
+  useEffect(() => { void loadAvatarInfo(); }, [loadAvatarInfo]);
+
+  useEffect(() => {
+    if (!settingsHydrated) return;
+    const id = window.setTimeout(() => {
+      void persistSettings().catch((e) => console.error("metadata-settings persist", e));
+    }, 650);
+    return () => window.clearTimeout(id);
+  }, [settingsHydrated, targetPlatform, targetKeywords, systemPrompt, persistSettings]);
 
   const onPlatformChange = (p: PlatformId) => {
     setTargetPlatform(p);
-    void refreshDefaultPromptPreview(p);
+    void (async () => {
+      const r = await fetch(
+        `/api/pipeline/metadata-settings?work=${encodeURIComponent(workApplied)}&lang=${encodeURIComponent(lang)}&preview_platform=${encodeURIComponent(p)}`,
+      );
+      if (!r.ok) return;
+      const j = (await r.json()) as { default_system_prompt?: string };
+      if (typeof j.default_system_prompt === "string") setSystemPrompt(j.default_system_prompt);
+    })();
   };
 
   const handleSave = async () => {
@@ -90,13 +132,16 @@ export function MetadataPanel({
   return (
     <div className="rounded-2xl bg-slate-900 p-4 space-y-3">
 
-      {/* Info */}
-      <div className="rounded-xl border border-slate-600 bg-slate-800 px-3 py-2 text-xs text-slate-400">
-        <span className="font-semibold text-white">Metadata</span> prepara título,
-        descripción con actos para SEO, capítulos con timestamps, hook_type/hook_summary,
-        bloques production/marketing y <code className="rounded bg-slate-700 px-1">_gen</code>{" "}
-        (modelo y truncado del guion). <strong className="text-slate-300">Start step</strong> usa el LLM y los ajustes de abajo.
-        El JSON vive en <code className="rounded bg-slate-700 px-1">pipeline/metadata.json</code>.
+      {/* Info — orden del proceso */}
+      <div className="rounded-xl border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
+        <span className="font-semibold">Metadata — orden del proceso.</span>{" "}
+        <span className="text-amber-200/95">
+          <strong className="text-amber-100">1</strong> Ajustes (plataforma, claves, system prompt) antes del LLM.{" "}
+          <strong className="text-amber-100">2</strong> En la tarjeta del paso, «Start step» genera el JSON; aquí revisas o editas <code className="rounded bg-amber-900/40 px-1">pipeline/metadata.json</code> y guardas en sesión.{" "}
+          <strong className="text-amber-100">3</strong> Si en <code className="rounded bg-amber-900/40 px-1">editorial.thumbnail_ideas</code> hay ideas, envíalas al pipeline de imágenes.
+        </span>{" "}
+        Incluye título, descripción por actos, capítulos,{" "}
+        <code className="rounded bg-amber-900/40 px-1">hook_type</code>/<code className="rounded bg-amber-900/40 px-1">hook_summary</code>, production/marketing y <code className="rounded bg-amber-900/40 px-1">_gen</code>.
       </div>
 
       {generationRunning && (
@@ -105,119 +150,158 @@ export function MetadataPanel({
         </div>
       )}
 
-      {/* Settings */}
-      <Section id="meta-settings" title="Ajustes De Generación" description="Plataforma destino, palabras clave y system prompt para personalizar el LLM.">
-        <div className="space-y-3">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <Label>Plataforma destino</Label>
-              <Select value={targetPlatform} onChange={(e) => onPlatformChange(e.target.value as PlatformId)} disabled={generationRunning}>
-                <option value="youtube">YouTube</option>
-                <option value="tiktok">TikTok</option>
-                <option value="reels">Reels (Instagram)</option>
-              </Select>
-            </div>
-            <div>
-              <Label>Palabras clave objetivo</Label>
-              <Input value={targetKeywords} onChange={(e) => setTargetKeywords(e.target.value)} disabled={generationRunning} placeholder='"comprar casa", fondos indexados' />
-            </div>
-          </div>
+      {/* 1 · Ajustes (entrada al LLM) */}
+      <Section id="meta-settings" badge="1" title="Ajustes de generación" description="Antes de «Start step» en la tarjeta del paso. Los cambios se guardan solos en la sesión. Al cambiar la plataforma se inserta el prompt predeterminado del servidor (editable en pantalla completa).">
+        <div className="space-y-4">
           <div>
-            <Label>System prompt (opcional)</Label>
-            <p className="mb-1 text-[11px] leading-snug text-slate-500">
-              Vacío = se usa el prompt por defecto del servidor para la plataforma elegida.
+            <Label>Plataforma destino</Label>
+            <Select value={targetPlatform} onChange={(e) => onPlatformChange(e.target.value as PlatformId)} disabled={generationRunning || !settingsHydrated}>
+              <option value="youtube">YouTube</option>
+              <option value="tiktok">TikTok</option>
+              <option value="reels">Reels (Instagram)</option>
+            </Select>
+            <p className="mt-1 text-[11px] leading-snug text-slate-500">
+              Al elegir una plataforma se carga el prompt predeterminado del servidor para esa red (puedes editarlo abajo).
             </p>
-            <TextArea value={systemPrompt} onChange={(e) => setSystemPrompt(e.target.value)} disabled={generationRunning} className="min-h-[140px] font-mono text-xs" placeholder="Vacío = usar predeterminado." />
-            <div className="mt-2 flex flex-wrap gap-2">
-              <Btn type="button" className="border border-slate-500 bg-slate-700 text-slate-200 hover:bg-slate-600" disabled={generationRunning} onClick={() => setSystemPrompt(defaultSystemPrompt)}>
-                Pegar prompt predeterminado
-              </Btn>
-              <Btn type="button" className="bg-white text-slate-900 hover:bg-slate-100" disabled={generationRunning}
-                onClick={() => run("Guardar ajustes metadata", async () => {
-                  await putJson(`/api/pipeline/metadata-settings`, { work: workApplied, target_platform: targetPlatform, target_keywords: targetKeywords, system_prompt: systemPrompt.trim() });
-                  await hydrateSettings();
-                })}>
-                Guardar ajustes
-              </Btn>
-            </div>
+          </div>
+
+          <div>
+            <ExpandableTextArea
+              label="Palabras clave objetivo"
+              value={targetKeywords}
+              onChange={setTargetKeywords}
+              placeholder='"comprar casa", fondos indexados, temas SEO…'
+              modalTitle="Metadata · Palabras clave objetivo"
+              variant="output"
+              disabled={generationRunning || !settingsHydrated}
+              disabledTitle={generationRunning ? "No disponible mientras se genera" : !settingsHydrated ? "Cargando ajustes desde la sesión…" : undefined}
+            />
+          </div>
+
+          <div>
+            <ExpandableTextArea
+              label="System prompt"
+              value={systemPrompt}
+              onChange={setSystemPrompt}
+              placeholder="Vacío en disco = en generación se usa el predeterminado del servidor para la plataforma."
+              modalTitle="Metadata · System prompt"
+              variant="output"
+              disabled={generationRunning || !settingsHydrated}
+              disabledTitle={generationRunning ? "No disponible mientras se genera" : !settingsHydrated ? "Cargando ajustes desde la sesión…" : undefined}
+            />
+            <p className="mb-0 mt-1 text-[11px] leading-snug text-slate-500">
+              Clic en el recuadro o «✎ editar» · <kbd className="rounded bg-slate-700 px-1 font-mono text-[10px]">Guardar</kbd> en el modal aplica el texto y se guarda en la sesión unos instantes después.
+            </p>
           </div>
         </div>
       </Section>
 
-      {/* Miniaturas action */}
-      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-600 bg-gradient-to-r from-slate-800 to-slate-700 px-3 py-2">
-        <Btn type="button" className="bg-white text-slate-900 hover:bg-slate-100 disabled:opacity-40"
-          disabled={generationRunning || !loaded}
-          title={!loaded ? "Genera metadata antes para tener editorial.thumbnail_ideas" : undefined}
-          onClick={() => run("Miniaturas → pipeline imágenes", async () => {
-            await postJson(`/api/pipeline/metadata/push-thumbnails-to-images`, { work: workApplied });
-            await refreshPipeline();
-          })}>
-          Generar miniaturas → pipeline de imágenes
-        </Btn>
-        <span className="text-[11px] text-slate-400">
-          Copia <code className="rounded bg-slate-700 px-1">editorial.thumbnail_ideas</code> a <code className="rounded bg-slate-700 px-1">pipeline/image_prompts.json</code>.
-        </span>
-      </div>
-
-      {/* Output */}
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="text-sm font-semibold tracking-wider capitalize text-white">Salida · metadata.json</div>
-          <div className="flex gap-2">
+      {/* 2 · Salida JSON (tras Start step o edición manual) */}
+      <Section id="meta-output" badge="2" title="Salida · metadata.json" description="Resultado del LLM o edición manual. Guarda en sesión para escribir disco antes del paso 3.">
+        <div className="space-y-2">
+          <div className="flex flex-wrap justify-end gap-2">
             <Btn type="button" className="border border-slate-600 bg-slate-800 text-slate-200 hover:bg-slate-700" onClick={() => void loadMetadata()}>Recargar desde disco</Btn>
-            <div role="button" tabIndex={0} className="cursor-pointer rounded-lg border border-slate-600 bg-slate-800 px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-700"
-              onClick={() => setFullscreen(true)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setFullscreen(true); } }}>
-              Pantalla completa
-            </div>
+          </div>
+          <ExpandableTextArea
+            value={jsonText}
+            onChange={setJsonText}
+            placeholder="Tras «Start step» aparecerá JSON (version, platform, editorial, production…)"
+            modalTitle="pipeline/metadata.json"
+            variant="output"
+            disabled={generationRunning}
+            disabledTitle={generationRunning ? "No disponible mientras se genera" : undefined}
+          />
+          <div className="flex flex-wrap gap-2">
+            <Btn className="bg-white text-slate-900 hover:bg-slate-100" disabled={generationRunning}
+              onClick={() => run("Guardar metadata", handleSave)}>
+              Guardar en sesión
+            </Btn>
+            <span className="self-center text-[11px] text-slate-500">
+              Tras editar en pantalla completa, confirma aquí para escribir <code className="rounded bg-slate-700 px-1">pipeline/metadata.json</code>.
+            </span>
           </div>
         </div>
-        <div role="button" tabIndex={0} aria-label="Abrir editor a pantalla completa"
-          onClick={() => setFullscreen(true)}
-          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setFullscreen(true); } }}
-          className={`min-h-[160px] w-full cursor-pointer rounded-xl border border-slate-600 bg-slate-800 px-3 py-2 text-left font-mono text-xs leading-relaxed shadow-inner outline-none transition hover:border-slate-500 ${jsonText.trim() ? "text-slate-200" : "text-slate-500"}`}>
-          <span className="block max-h-[240px] overflow-y-auto whitespace-pre-wrap">
-            {jsonText.trim() ? jsonText.slice(0, 800) + (jsonText.length > 800 ? "\n…" : "") : "Tras «Start step» aparecerá JSON (version, platform, editorial, production…)"}
-          </span>
+      </Section>
+
+      {/* 3 · Miniaturas (lee metadata.json ya guardado) */}
+      <Section id="meta-thumbnails-push" badge="3" title="Miniaturas → pipeline de imágenes" description="Solo después de tener metadata en disco con editorial.thumbnail_ideas. Copia esas cadenas a pipeline/image_prompts.json para el paso Imágenes.">
+        <div className="space-y-3">
+          {/* Toggle avatar */}
+          <div className="flex flex-wrap items-start gap-3 rounded-xl border border-slate-700 bg-slate-800/50 px-3 py-2.5">
+            <label className="flex cursor-pointer items-center gap-2.5">
+              <div
+                role="checkbox"
+                aria-checked={includeAvatar}
+                tabIndex={0}
+                className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${includeAvatar ? "bg-blue-500" : "bg-slate-600"}`}
+                onClick={() => setIncludeAvatar((v) => !v)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setIncludeAvatar((v) => !v); } }}
+              >
+                <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${includeAvatar ? "translate-x-4" : "translate-x-0.5"}`} />
+              </div>
+              <span className="text-xs font-medium text-slate-200">Incluir avatar en las miniaturas</span>
+            </label>
+            {includeAvatar && (
+              <span className="text-[11px] text-slate-400">
+                {avatarName
+                  ? <>Avatar: <span className="font-medium text-blue-300">{avatarName}</span> (configurado en Image Prompt Writer)</>
+                  : <span className="text-amber-400">No hay avatar configurado en Image Prompt Writer — se usará la descripción por defecto.</span>
+                }
+              </span>
+            )}
+            {!includeAvatar && (
+              <span className="text-[11px] text-slate-500">
+                Activa para añadir el personaje del canal a cada prompt de miniatura.
+              </span>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Btn type="button" className="bg-white text-slate-900 hover:bg-slate-100 disabled:opacity-40"
+              disabled={generationRunning || !loaded}
+              title={!loaded ? "Genera y guarda metadata antes (paso 2) para tener editorial.thumbnail_ideas" : undefined}
+              onClick={() => run("Miniaturas → pipeline imágenes", async () => {
+                await postJson(`/api/pipeline/metadata/push-thumbnails-to-images`, { work: workApplied, include_avatar: includeAvatar });
+                await refreshPipeline();
+                await loadImagePrompts();
+              })}>
+              Generar miniaturas → pipeline de imágenes
+            </Btn>
+            <span className="text-[11px] text-slate-400">
+              Origen: <code className="rounded bg-slate-700 px-1">editorial.thumbnail_ideas</code> en el JSON del paso 2.
+            </span>
+          </div>
+
+          {imagePromptsLoaded && (
+            <div className="space-y-1">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-medium text-slate-400">pipeline/image_prompts.json generado</span>
+                <Btn type="button" className="border border-slate-600 bg-slate-800 text-slate-200 hover:bg-slate-700 text-[11px] py-0.5 px-2" onClick={() => void loadImagePrompts()}>
+                  Recargar
+                </Btn>
+              </div>
+              <ExpandableTextArea
+                value={imagePromptsText}
+                onChange={setImagePromptsText}
+                placeholder=""
+                modalTitle="pipeline/image_prompts.json"
+                variant="output"
+              />
+            </div>
+          )}
+
+          {!imagePromptsLoaded && (
+            <p className="text-[11px] text-slate-500">
+              Aún no hay <code className="rounded bg-slate-800 px-1">image_prompts.json</code> en disco. Pulsa el botón de arriba para generarlo.
+            </p>
+          )}
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Btn className="bg-white text-slate-900 hover:bg-slate-100" disabled={generationRunning}
-            onClick={() => run("Guardar metadata", handleSave)}>
-            Guardar en sesión
-          </Btn>
-          <span className="self-center text-[11px] text-slate-500">
-            Escribe <code className="rounded bg-slate-700 px-1">pipeline/metadata.json</code> y marca el paso como listo.
-          </span>
-        </div>
-      </div>
+      </Section>
 
       {!loaded && !generationRunning && (
         <p className="text-xs text-slate-500">
-          Sin metadata en disco. Configura arriba, pulsa <strong className="text-slate-300">Guardar ajustes</strong> y luego <strong className="text-slate-300">Start step</strong>.
+          Sin <code className="rounded bg-slate-800 px-1">metadata.json</code> en disco: completa el paso <strong className="text-slate-300">1</strong>, ejecuta <strong className="text-slate-300">Start step</strong> en la tarjeta del paso Metadata y revisa el paso <strong className="text-slate-300">2</strong>.
         </p>
-      )}
-
-      {fullscreen && (
-        <div className="fixed inset-y-0 left-[280px] right-0 z-[200] flex items-stretch justify-center bg-slate-950/55 p-2 sm:p-4" role="dialog" aria-modal="true">
-          <div className="flex h-[min(calc(100vh-1rem),920px)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
-            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
-              <span className="text-sm font-semibold text-slate-900">pipeline/metadata.json</span>
-              <div className="flex gap-2">
-                <Btn type="button" className="bg-slate-900 text-white hover:bg-slate-800" disabled={generationRunning}
-                  onClick={() => run("Guardar metadata", handleSave)}>
-                  Guardar en sesión
-                </Btn>
-                <Btn type="button" className="bg-white text-slate-800 ring-1 ring-slate-200 hover:bg-slate-50" onClick={() => setFullscreen(false)}>Cerrar</Btn>
-              </div>
-            </div>
-            <textarea ref={modalRef} readOnly={generationRunning} value={jsonText} onChange={(e) => setJsonText(e.target.value)} spellCheck={false}
-              className={`min-h-0 flex-1 resize-none border-0 px-4 py-3 font-mono text-sm leading-relaxed outline-none focus:ring-0 ${generationRunning ? "cursor-wait bg-slate-100 text-slate-600" : "bg-white text-slate-900"}`} />
-            <p className="shrink-0 border-t border-slate-100 px-4 py-2 text-[11px] text-slate-500">
-              <kbd className="rounded bg-slate-100 px-1 font-mono text-[10px]">Esc</kbd> cierra sin guardar.
-              {generationRunning && <span className="font-medium text-amber-800"> Generando — solo lectura.</span>}
-            </p>
-          </div>
-        </div>
       )}
     </div>
   );

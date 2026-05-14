@@ -1212,8 +1212,12 @@ def api_pipeline_metadata_settings_put(body: MetadataSettingsPutBody):
     return {"ok": True, "settings": saved}
 
 
+class PushThumbnailsBody(WorkModel):
+    include_avatar: bool = False
+
+
 @router.post("/pipeline/metadata/push-thumbnails-to-images")
-def api_pipeline_metadata_push_thumbnails(body: WorkModel):
+def api_pipeline_metadata_push_thumbnails(body: PushThumbnailsBody):
     try:
         work_dir = safe_work_dir(body.work)
     except ValueError as e:
@@ -1221,7 +1225,7 @@ def api_pipeline_metadata_push_thumbnails(body: WorkModel):
     from videomaker.pipeline.runner import push_thumbnail_ideas_to_image_prompts
 
     try:
-        info = push_thumbnail_ideas_to_image_prompts(work_dir)
+        info = push_thumbnail_ideas_to_image_prompts(work_dir, include_avatar=body.include_avatar)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"ok": True, **info}

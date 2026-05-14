@@ -92,6 +92,8 @@ export function ExpandableTextArea({
   placeholder,
   modalTitle,
   variant = "form",
+  disabled = false,
+  disabledTitle,
 }: {
   label?: string;
   value: string;
@@ -99,6 +101,10 @@ export function ExpandableTextArea({
   placeholder?: string;
   modalTitle: string;
   variant?: "form" | "output" | "outputLight";
+  /** Solo lectura: no abre el editor a pantalla completa. */
+  disabled?: boolean;
+  /** Tooltip cuando está disabled (si no se pasa, mensaje genérico). */
+  disabledTitle?: string;
 }) {
   const [modalOpen, setModalOpen] = useState(false);
   const fullText = value.trim();
@@ -106,12 +112,22 @@ export function ExpandableTextArea({
   const preview = fullText.slice(0, previewLimit);
   const hasMore = fullText.length > previewLimit;
 
-  const containerClass =
+  const baseContainerClass =
     variant === "output"
-      ? "group relative min-h-[120px] w-full cursor-pointer rounded-xl border border-slate-600 bg-slate-800 px-3 py-2 text-left shadow-inner outline-none transition hover:border-slate-500"
+      ? "group relative min-h-[120px] w-full rounded-xl border border-slate-600 bg-slate-800 px-3 py-2 text-left shadow-inner outline-none transition"
       : variant === "outputLight"
-        ? "group relative min-h-[120px] w-full cursor-pointer rounded-xl border border-slate-200 bg-white px-3 py-2 text-left shadow-inner outline-none transition hover:border-slate-300"
-      : "group relative w-full cursor-pointer rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 transition-all hover:border-slate-400 hover:shadow-sm";
+        ? "group relative min-h-[120px] w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left shadow-inner outline-none transition"
+      : "group relative w-full rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 transition-all";
+
+  const interactiveClass = disabled
+    ? " cursor-not-allowed opacity-50"
+    : variant === "output"
+      ? " cursor-pointer hover:border-slate-500"
+      : variant === "outputLight"
+        ? " cursor-pointer hover:border-slate-300"
+        : " cursor-pointer hover:border-slate-400 hover:shadow-sm";
+
+  const containerClass = `${baseContainerClass}${interactiveClass}`;
 
   const textClass =
     variant === "output"
@@ -126,22 +142,29 @@ export function ExpandableTextArea({
     <>
       {label && <Label>{label}</Label>}
       <div
-        role="button"
-        tabIndex={0}
-        aria-label={`Abrir ${modalTitle} a pantalla completa`}
+        role={disabled ? undefined : "button"}
+        tabIndex={disabled ? undefined : 0}
+        aria-disabled={disabled || undefined}
+        aria-label={disabled ? undefined : `Abrir ${modalTitle} a pantalla completa`}
         className={containerClass}
-        onClick={() => setModalOpen(true)}
-        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setModalOpen(true); } }}
-        title="Clic para editar a pantalla completa"
+        onClick={() => { if (!disabled) setModalOpen(true); }}
+        onKeyDown={(e) => { if (!disabled && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); setModalOpen(true); } }}
+        title={
+          disabled
+            ? (disabledTitle ?? "No disponible")
+            : "Clic para editar a pantalla completa"
+        }
       >
         <span className={textClass}>
           {preview
             ? `${preview}${hasMore ? "…" : ""}`
             : placeholder || "Vacío — clic para editar"}
         </span>
+        {!disabled && (
         <span className="absolute right-2 top-2 rounded bg-slate-600 px-1.5 py-0.5 text-[10px] text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity">
           ✎ editar
         </span>
+        )}
       </div>
 
       {modalOpen && (
