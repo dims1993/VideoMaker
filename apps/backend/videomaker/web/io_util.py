@@ -300,10 +300,20 @@ def build_session_state(work: str) -> dict:
         "OLLAMA_BASE_URL": os.environ.get("OLLAMA_BASE_URL", ""),
         "OLLAMA_MODEL": os.environ.get("OLLAMA_MODEL", ""),
         "OPENAI_API_KEY": bool(os.environ.get("OPENAI_API_KEY")),
+        "ANTHROPIC_API_KEY": bool(os.environ.get("ANTHROPIC_API_KEY", "").strip()),
     }
+    transcripts_session: dict = {}
+    try:
+        from videomaker.web.transcripts_session import read_transcripts_session, session_public_view
+
+        transcripts_session = session_public_view(read_transcripts_session(work_dir))
+    except Exception:
+        transcripts_session = {}
+
     return {
         "work": work,
         "work_dir": str(work_dir),
+        "transcripts_session": transcripts_session,
         "voice_presets": sorted(VOICE_PRESETS.keys()),
         "has_script": script_path.is_file(),
         "script_path": str(script_path),

@@ -8,7 +8,7 @@ from typing import Any
 
 from videomaker.llm.avatar_prompt_writer import AVATAR_DEFAULT_DESCRIPTION
 
-VALID_GENERATORS = frozenset({"midjourney", "flux", "dall_e", "sd", "custom"})
+VALID_GENERATORS = frozenset({"gemini", "midjourney", "flux", "dall_e", "sd", "custom"})
 
 _AVATAR_SECS_DEFAULT = 6.0
 _AVATAR_MAX_IMAGES_DEFAULT = 80
@@ -18,12 +18,22 @@ def _coerce_target_generator(raw: str | None) -> str:
     """Normaliza `target_generator` guardado (valores desconocidos u obsoletos → midjourney)."""
     tg = (raw or "").strip().lower()
     if tg not in VALID_GENERATORS:
-        return "midjourney"
+        return "gemini"
     return tg
 
 
 def _path(work_dir: Path) -> Path:
     return work_dir / "pipeline" / "image_prompt_writer_settings.json"
+
+
+VALID_VISUAL_MODES = frozenset({"static", "animation", "combined"})
+
+
+def _coerce_visual_mode(raw: str | None) -> str:
+    mode = (raw or "").strip().lower()
+    if mode not in VALID_VISUAL_MODES:
+        return "animation"
+    return mode
 
 
 def read_image_prompt_writer_settings(work_dir: Path) -> dict[str, Any]:
@@ -39,9 +49,12 @@ def read_image_prompt_writer_settings(work_dir: Path) -> dict[str, Any]:
         # Defaults para campos de avatar
         out.setdefault("use_avatar", False)
         out.setdefault("avatar_id", "")
+        out.setdefault("visual_style_preset_id", "")
         out.setdefault("avatar_description", AVATAR_DEFAULT_DESCRIPTION)
         out.setdefault("avatar_secs_per_image", _AVATAR_SECS_DEFAULT)
         out.setdefault("avatar_max_images", _AVATAR_MAX_IMAGES_DEFAULT)
+        out.setdefault("hook_essay_counterpoint", True)
+        out["visual_mode"] = _coerce_visual_mode(str(out.get("visual_mode") or ""))
         return out
     except Exception:
         return {}
@@ -56,22 +69,28 @@ def write_image_prompt_writer_settings(
     notes: str,
     use_avatar: bool = False,
     avatar_id: str = "",
+    visual_style_preset_id: str = "",
     avatar_description: str = "",
     avatar_secs_per_image: float = _AVATAR_SECS_DEFAULT,
     avatar_max_images: int = _AVATAR_MAX_IMAGES_DEFAULT,
+    visual_mode: str = "animation",
+    hook_essay_counterpoint: bool = True,
 ) -> dict[str, Any]:
     tg = _coerce_target_generator(target_generator)
     payload = {
-        "version": 2,
+        "version": 3,
         "target_generator": tg,
         "append_midjourney_suffix": bool(append_midjourney_suffix),
         "export_negative_separate": bool(export_negative_separate),
         "notes": (notes or "").strip(),
         "use_avatar": bool(use_avatar),
         "avatar_id": (avatar_id or "").strip(),
+        "visual_style_preset_id": (visual_style_preset_id or "").strip(),
         "avatar_description": (avatar_description or AVATAR_DEFAULT_DESCRIPTION).strip(),
         "avatar_secs_per_image": max(2.0, float(avatar_secs_per_image)),
         "avatar_max_images": max(1, int(avatar_max_images)),
+        "visual_mode": _coerce_visual_mode(str(visual_mode)),
+        "hook_essay_counterpoint": bool(hook_essay_counterpoint),
     }
     work_dir.mkdir(parents=True, exist_ok=True)
     d = work_dir / "pipeline"

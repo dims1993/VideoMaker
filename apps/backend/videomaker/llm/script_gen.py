@@ -1,13 +1,22 @@
-"""Generación de guion vía proveedor configurable (OpenAI-compatible / Ollama / etc.)."""
+"""Generación de guion vía Anthropic (capa creativa)."""
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass
 from typing import Callable
 
+_LOG = logging.getLogger(__name__)
+
+ProgressFn = Callable[[str], None]
+
 from videomaker.core.models import Locale, ScriptBlueprint
+from videomaker.llm.script_writer_voice import (
+    prepare_script_writer_system_prompt,
+    prepare_script_writer_user_prompt,
+)
 from videomaker.llm.script_pipeline_format import (
     build_session_user_prompt,
     technical_pipeline_format_addon,
@@ -115,57 +124,36 @@ def _extract_reference_keyword_line(full_text: str) -> str:
 
 
 def _staged_outline_prompt(user: str, plan: _StagePlan) -> str:
+    titles = ", ".join(f"«{b}»" for b in plan.blocks)
     return (
         user.rstrip()
         + "\n\n"
         + _PROMPT_ADDON_TITLE
         + "\n\n"
-        + "Vas a trabajar en **modo por etapas** para un guion largo.\n"
-        + "Devuelve **SOLO** un OUTLINE muy detallado (no escribas el GUIÓN todavía).\n"
-        + "Requisitos del OUTLINE:\n"
-        + f"- Debe tener exactamente {len(plan.blocks)} bloques, con estos títulos: "
-        + ", ".join(f"“{b}”" for b in plan.blocks)
-        + ".\n"
-        + "- Si otras instrucciones mencionan un número de bloques distinto, **ignóralo**: aquí manda esta lista.\n"
-        + "- Prohibido usar Markdown (sin **negritas**, sin listas con `*`, sin títulos con `###`). Usa texto plano.\n"
-        + "- Para cada bloque incluye: objetivo narrativo, ideas clave, 2–4 datos o ejemplos concretos (si no conoces la fuente exacta, formula como ejemplo plausible), y un puente hacia el siguiente bloque.\n"
-        + "- Estima tiempo por bloque para un vídeo de ~"
-        + f"{max(1, int(plan.target_words / max(1, _wpm_default())))}"
-        + " min y sugiere palabras aproximadas por bloque.\n"
-        + "- Usa un formato con bullets y subtítulos claros.\n"
-        + "\n"
-        + "Salida estricta:\n"
+        + f"Modo etapas: devuelve **solo** OUTLINE (sin GUIÓN). {len(plan.blocks)} bloques: {titles}.\n"
+        + "Texto plano; una línea por sección + 2–3 beats concretos (escena/objeto, no eslogan).\n"
         + "OUTLINE\n"
-        + "(y nada más)\n"
     )
 
 
-def _staged_block_prompt(*, outline: str, block_title: str, prior_tail: str, target_words_block: int) -> str:
+def _staged_block_prompt(*, outline: str, block_title: str, prior_tail: str, target_words_block: int, include_broll: bool = True) -> str:
     tail = (prior_tail or "").strip()
     tail = tail[-2200:] if len(tail) > 2200 else tail
+    broll_line = (
+        "- `[B-ROLL: …]` cada ~2 frases, formato exacto.\n"
+        if include_broll
+        else "- Sin `[B-ROLL]`.\n"
+    )
     return (
-        "Vas a escribir SOLO el bloque del GUIÓN indicado.\n"
-        "Condiciones:\n"
-        "- Devuelve únicamente el texto del bloque, empezando con `[CATEGORIA: <título>]`.\n"
-        "- Prohibido Markdown: sin **negritas**, sin listas con `*`, sin encabezados.\n"
-        "- Integra `[B-ROLL: ...]` exactamente cada dos frases (2 frases → 1 tag, 4 frases → 2 tags, etc.).\n"
-        "- El tag debe ser EXACTO: `[B-ROLL: descripción]` (sin `**`, sin índices `0/1`, sin variantes).\n"
-        "- Prohibido crear secciones extra como “Sugerencias…”, “Etiquetas B-ROLL…”, “Recursos…”, “Preguntas…”.\n"
-        "- No repitas el OUTLINE completo; úsalo para mantener coherencia.\n"
-        "- Evita frases genéricas tipo “en este video vamos a ver…”. Usa ejemplos, metáforas, micro-historias.\n"
-        f"- Objetivo mínimo: {target_words_block} palabras narrables para este bloque. Si te quedas corto, sigue escribiendo hasta alcanzar el mínimo.\n"
-        "\n"
-        "Ejemplo de formato (mini-ejemplo):\n"
-        "[CATEGORIA: Ejemplo]\n"
-        "Frase uno. Frase dos. [B-ROLL: close-up hands counting coins on a kitchen table]\n"
-        "Frase tres. Frase cuatro. [B-ROLL: wide shot of a person writing a budget at night]\n"
-        "\n"
-        "OUTLINE (referencia):\n"
+        f"Escribe solo el bloque «{block_title}». Empieza con `[CATEGORIA: {block_title}]`.\n"
+        + "Texto plano. Escena concreta > frase que suena importante.\n"
+        + broll_line
+        + f"Mínimo ~{target_words_block} palabras narrables.\n\n"
+        + "OUTLINE:\n"
         + outline.strip()
         + "\n\n"
-        + ("ÚLTIMO CONTEXTO DEL GUIÓN (para continuidad):\n" + tail + "\n\n" if tail else "")
-        + f"Ahora escribe el bloque: {block_title}\n"
-        + "Salida estricta: SOLO este bloque.\n"
+        + (f"Continúa desde:\n{tail}\n\n" if tail else "")
+        + f"Bloque: {block_title}\n"
     )
 
 
@@ -187,34 +175,24 @@ def _generate_script_staged(
     model: str | None = None,
     system_extra: str = "",
     user_extra: str = "",
+    include_broll: bool = True,
+    on_progress: ProgressFn | None = None,
 ) -> str:
     system, user = compose_messages(
         blueprint,
         system_extra=system_extra,
         user_extra=user_extra,
+        include_broll=include_broll,
     )
-    selected = (provider or os.environ.get("VIDEOMAKER_LLM_PROVIDER") or "openai").lower()
+    from videomaker.llm.llm_routing import call_creative_llm
+
+    def _progress(msg: str) -> None:
+        if on_progress:
+            on_progress(msg)
+        _LOG.info("script staged: %s", msg)
 
     def call_llm(user_prompt: str) -> str:
-        if selected == "ollama":
-            from .providers.ollama import ollama_chat
-
-            return ollama_chat(
-                system=system,
-                user=user_prompt,
-                model=model or os.environ.get("OLLAMA_MODEL", "llama3.2:latest"),
-            ).strip()
-
-        if selected == "openai":
-            from .providers.openai_compat import openai_compat_chat
-
-            return openai_compat_chat(
-                system=system,
-                user=user_prompt,
-                model=model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-            ).strip()
-
-        raise ValueError(f"Proveedor LLM no soportado: {selected}")
+        return call_creative_llm(system=system, user=user_prompt, model=model)
 
     plan = _stage_plan_from_extras(
         blueprint.target_minutes,
@@ -222,6 +200,7 @@ def _generate_script_staged(
         user_extra=user_extra,
     )
 
+    _progress("Claude: outline…")
     outline = call_llm(_staged_outline_prompt(user, plan))
     # Limpieza mínima: nos quedamos desde OUTLINE si el modelo añadió texto antes.
     m = re.search(r"(?im)^\s*OUTLINE\s*$", outline or "")
@@ -240,12 +219,14 @@ def _generate_script_staged(
     blocks_text: list[str] = []
     prior_tail = ""
     for idx, title in enumerate(plan.blocks):
+        _progress(f"Claude: bloque {idx + 1}/{len(plan.blocks)} — {title}…")
         block = call_llm(
             _staged_block_prompt(
                 outline=outline,
                 block_title=title,
                 prior_tail=prior_tail,
                 target_words_block=per_block[idx],
+                include_broll=include_broll,
             )
         ).strip()
         # Asegura encabezado de categoría por compatibilidad con TTS/producción.
@@ -259,6 +240,7 @@ def _generate_script_staged(
     # Keywords finales: si el modelo no las dio, pedimos una línea barata.
     kw = _extract_reference_keyword_line(guion)
     if not kw:
+        _progress("Claude: keywords visuales…")
         kw = call_llm(
             "Devuelve SOLO una línea con 8–12 keywords en inglés, separadas por comas, como referencia visual "
             "(moodboard / equipo de imagen / IA). No añadas nada más."
@@ -267,34 +249,29 @@ def _generate_script_staged(
 
     full = f"{outline}\n\nGUIÓN\n{guion}\n\n{kw}".strip()
 
-    # Reparación global (misma lógica que generate_script original), pero con más reintentos.
+    # Reparación global: en modo staged el guion ya se armó por bloques; 1 paso ligero como máximo.
     min_words = _target_words_for_minutes(blueprint.target_minutes)
-    max_repairs = _max_repairs()
+    max_repairs = min(1, _max_repairs())
     draft = full
     for attempt in range(max_repairs + 1):
-        issues = _script_issues(draft, min_words=min_words)
+        issues = _script_issues(draft, min_words=min_words, include_broll=include_broll)
         if not issues:
             return draft.strip()
         if attempt >= max_repairs:
+            _LOG.warning(
+                "script staged: skipping further repairs (%d issues remain)", len(issues)
+            )
             return draft.strip()
+        _progress(f"Claude: ajuste final ({attempt + 1})…")
         repair_instructions = "\n".join(issues)
         draft = call_llm(
             user.rstrip()
             + "\n\n"
             + _PROMPT_ADDON_TITLE
             + "\n\n"
-            + "Tu borrador NO cumple los requisitos. Corrige y devuelve el documento completo otra vez.\n"
-            + "Incumplimientos detectados:\n"
+            + "Corrige el borrador completo. Falta:\n"
             + repair_instructions
-            + "\n\n"
-            + "Reglas de corrección:\n"
-            + "- Mantén el tema/keywords, el tono y la estructura (OUTLINE + GUIÓN con [CATEGORIA: …]).\n"
-            + "- Asegura al menos el mínimo de palabras narrables (las etiquetas no cuentan).\n"
-            + "- Inserta [B-ROLL: ...] cada dos oraciones del texto narrable, distribuidas dentro del texto.\n"
-            + "- Prohibido Markdown: elimina **negritas**, listas con `*` y títulos.\n"
-            + "- No uses otros corchetes (solo [CATEGORIA] y [B-ROLL]).\n"
-            + "- Elimina secciones extra tipo “Sugerencias…”, “Recursos…”, “Preguntas…”, “Etiquetas B-ROLL…”.\n"
-            + "- No pongas una sección final de “ETIQUETAS DE B-ROLL” ni una lista de B-ROLL al final.\n"
+            + "\nMantén voz y tema. OUTLINE + GUIÓN + KEYWORDS. Solo [CATEGORIA] y [B-ROLL].\n"
             + "\n\n"
             + "BORRADOR ANTERIOR (para corregir/expandir):\n"
             + draft.strip()
@@ -303,46 +280,10 @@ def _generate_script_staged(
     return draft.strip()
 
 
-def _strip_non_narrable_for_metrics(text: str) -> str:
-    """
-    Aproxima el texto narrable para métricas (longitud y densidad visual).
-
-    Quita:
-    - Sección OUTLINE (si existe).
-    - Bloque final de keywords / referencia visual.
-    - Líneas de [CATEGORIA: …] y etiquetas [B-ROLL: …].
-    """
-    t = text or ""
-
-    # Si hay GUIÓN, empezamos ahí. Si no, quitamos OUTLINE si está.
-    m = re.search(r"(?im)^\s*(GUI[ÓO]N|GUION)\s*$", t)
-    if m:
-        t = t[m.end() :]
-    else:
-        m2 = re.search(r"(?im)^\s*OUTLINE\s*$", t)
-        if m2:
-            t = t[m2.end() :]
-
-    # Corta línea final de keywords / referencia visual (no narrable).
-    cut = re.search(
-        r"(?im)^\s*(KEYWORDS\s+PARA\s+STOCK|REFERENCIA\s+VISUAL|TAGS?\s+PARA\s+STOCK|B[- ]?ROLL\s+TAGS?)\b.*$",
-        t,
-    )
-    if cut:
-        t = t[: cut.start()]
-
-    # Quita líneas de categoría y cualquier [B-ROLL: ...] inline.
-    t = re.sub(r"(?im)^\s*\[CATEGORIA\s*:[^\]]+\]\s*$", "", t)
-    t = re.sub(r"(?i)\[B-ROLL\s*:?[^\]]*\]", "", t)
-
-    t = re.sub(r"[ \t]+", " ", t)
-    t = re.sub(r"\n{3,}", "\n\n", t)
-    return t.strip()
-
-
 def _count_narrable_words(text: str) -> int:
-    t = _strip_non_narrable_for_metrics(text)
-    return len(re.findall(r"\b\w+\b", t, flags=re.UNICODE))
+    from videomaker.core.script_clean import count_narrable_words
+
+    return count_narrable_words(text)
 
 
 def _count_broll_tags(text: str) -> int:
@@ -353,25 +294,34 @@ def _count_sentences_narrable(text: str) -> int:
     """
     Conteo aproximado de oraciones para verificar: 1 [B-ROLL] cada 2 oraciones.
     """
-    t = _strip_non_narrable_for_metrics(text)
+    from videomaker.core.script_clean import narrable_plain_text
+
+    t = narrable_plain_text(text)
     parts = re.split(r"[.!?]+(?:\s+|$)", t)
     return len([p for p in parts if re.search(r"\w", p)])
 
 
-def _script_issues(text: str, *, min_words: int) -> list[str]:
+def _script_issues(text: str, *, min_words: int, include_broll: bool = True) -> list[str]:
     issues: list[str] = []
     words = _count_narrable_words(text)
     if words < min_words:
         issues.append(
             f"- Longitud insuficiente: {words} palabras narrables (mínimo {min_words}, sin contar etiquetas)."
         )
-    sentences = _count_sentences_narrable(text)
     broll = _count_broll_tags(text)
-    need = max(0, sentences // 2)
-    if broll < need:
-        issues.append(
-            f"- Densidad B-ROLL insuficiente: {broll} etiquetas para ~{sentences} oraciones (objetivo ≥ {need})."
-        )
+    if include_broll:
+        sentences = _count_sentences_narrable(text)
+        need = max(0, sentences // 2)
+        if broll < need:
+            issues.append(
+                f"- Faltan etiquetas [B-ROLL: …]: hay {broll} y se necesitan al menos ~{need} "
+                f"(aprox. una cada dos oraciones narrables; ~{sentences} oraciones detectadas)."
+            )
+    else:
+        if broll > 0:
+            issues.append(
+                f"- El guion contiene etiquetas B-ROLL ({broll}) y no debe incluirlas en modo visual estático. Eliminalas."
+            )
     return issues
 
 
@@ -380,6 +330,7 @@ def compose_messages(
     *,
     system_extra: str = "",
     user_extra: str = "",
+    include_broll: bool = True,
 ) -> tuple[str, str]:
     """
     Ensambla system/user para el LLM.
@@ -393,14 +344,10 @@ def compose_messages(
         if blueprint.prompt_duration_minutes is not None
         else float(blueprint.target_minutes)
     )
-    fmt = technical_pipeline_format_addon(blueprint.locale, dm)
-    se = (system_extra or "").strip()
+    fmt = technical_pipeline_format_addon(blueprint.locale, dm, include_broll=include_broll)
+    se = prepare_script_writer_system_prompt((system_extra or "").strip())
     if se:
-        system = (
-            se
-            + "\n\n--- Formato de salida Videomaker (pipeline / TTS / B-roll) ---\n"
-            + fmt
-        )
+        system = (se + "\n\n" + fmt) if se else fmt
     else:
         system = (
             fmt
@@ -413,6 +360,9 @@ def compose_messages(
     ue = (user_extra or "").strip()
     if ue:
         user = user.rstrip() + f"\n\n{_PROMPT_ADDON_TITLE}\n\n" + ue
+    user = prepare_script_writer_user_prompt(
+        user, locale=blueprint.locale.value, language_code=blueprint.locale.value
+    )
     return system, user
 
 
@@ -431,78 +381,68 @@ def generate_script(
     user_extra: str = "",
     force_single_pass: bool = False,
     per_fragment_segment: bool = False,
+    include_broll: bool = True,
+    on_progress: ProgressFn | None = None,
 ) -> str:
     """
-    Llama al proveedor configurado.
-
-    Proveedores soportados:
-    - openai: API compatible OpenAI chat/completions (OPENAI_API_KEY + OPENAI_BASE_URL opcional)
-    - ollama: servidor local Ollama (OLLAMA_BASE_URL opcional; por defecto http://localhost:11434)
+    Genera el guion vía **Anthropic** (capa creativa). `provider` de sesión se ignora;
+    usa `model` si se indica, si no `ANTHROPIC_MODEL` del entorno.
     """
     if not force_single_pass and _staged_enabled(blueprint.target_minutes):
+        if on_progress:
+            on_progress(
+                f"Guion largo (~{blueprint.target_minutes:.0f} min): generación por etapas con Claude…"
+            )
         return _generate_script_staged(
             blueprint,
             provider=provider,
             model=model,
             system_extra=system_extra,
             user_extra=user_extra,
+            include_broll=include_broll,
+            on_progress=on_progress,
         )
 
-    system, user = compose_messages(blueprint, system_extra=system_extra, user_extra=user_extra)
-    selected = (provider or os.environ.get("VIDEOMAKER_LLM_PROVIDER") or "openai").lower()
+    system, user = compose_messages(
+        blueprint,
+        system_extra=system_extra,
+        user_extra=user_extra,
+        include_broll=include_broll,
+    )
+    from videomaker.llm.llm_routing import call_creative_llm
 
     def call_llm(user_prompt: str) -> str:
-        if selected == "ollama":
-            from .providers.ollama import ollama_chat
+        return call_creative_llm(system=system, user=user_prompt, model=model)
 
-            return ollama_chat(
-                system=system,
-                user=user_prompt,
-                model=model or os.environ.get("OLLAMA_MODEL", "llama3.2:latest"),
-            ).strip()
-
-        if selected == "openai":
-            from .providers.openai_compat import openai_compat_chat
-
-            return openai_compat_chat(
-                system=system,
-                user=user_prompt,
-                model=model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-            ).strip()
-
-        raise ValueError(f"Proveedor LLM no soportado: {selected}")
+    if on_progress:
+        on_progress("Claude: generando guion (paso único)…")
 
     min_words = _target_words_for_minutes(blueprint.target_minutes, per_fragment=per_fragment_segment)
     max_repairs = 2
 
     draft = call_llm(user)
     for attempt in range(max_repairs + 1):
-        issues = _script_issues(draft, min_words=min_words)
+        issues = _script_issues(draft, min_words=min_words, include_broll=include_broll)
         if not issues:
             return draft.strip()
         if attempt >= max_repairs:
             return draft.strip()
 
         repair_instructions = "\n".join(issues)
-        draft = call_llm(
+        repair_prompt = (
             user.rstrip()
             + "\n\n"
             + _PROMPT_ADDON_TITLE
             + "\n\n"
-            + "Tu borrador NO cumple los requisitos. Corrige y devuelve el documento completo otra vez.\n"
-            + "Incumplimientos detectados:\n"
+            + "Corrige el borrador completo. Falta:\n"
             + repair_instructions
-            + "\n\n"
-            + "Reglas de corrección:\n"
-            + "- Mantén el tema/keywords, el tono y la estructura (OUTLINE + GUIÓN con [CATEGORIA: …]).\n"
-            + "- Asegura al menos el mínimo de palabras narrables (las etiquetas no cuentan).\n"
-            + "- Inserta [B-ROLL: ...] cada dos oraciones del texto narrable, distribuidas dentro del texto.\n"
-            + "- No añadas otras etiquetas entre corchetes (solo [CATEGORIA] y [B-ROLL]).\n"
-            + "- No pongas una sección final de “ETIQUETAS DE B-ROLL”.\n"
-            + "\n\n"
-            + "BORRADOR ANTERIOR (para corregir/expandir):\n"
+            + "\nMantén voz y tema. OUTLINE + GUIÓN + KEYWORDS."
+            + (" [B-ROLL] cada ~2 frases." if include_broll else " Sin [B-ROLL].")
+            + "\n\nBORRADOR:\n"
             + draft.strip()
         )
+
+        draft = call_llm(repair_prompt)
 
     return draft.strip()
 

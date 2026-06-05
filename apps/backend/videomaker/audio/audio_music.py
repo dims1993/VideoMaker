@@ -21,6 +21,34 @@ def pick_random_track(music_dir: Path | None = None) -> Path | None:
     return random.choice(files)
 
 
+def pick_track_by_hint(hint: str, music_dir: Path | None = None) -> Path | None:
+    """Pick a music track whose filename matches the hint (best-effort)."""
+    root = music_dir or config.MUSIC_DIR
+    if not root.is_dir():
+        return None
+    exts = {".mp3", ".wav", ".m4a", ".aac", ".ogg"}
+    files = [p for p in root.iterdir() if p.suffix.lower() in exts]
+    if not files:
+        return None
+    h = (hint or "").strip().lower()
+    if not h:
+        return random.choice(files)
+    scored: list[tuple[int, Path]] = []
+    for p in files:
+        name = p.name.lower()
+        score = 0
+        for token in h.replace(",", " ").replace("/", " ").split():
+            if token and token in name:
+                score += 1
+        if score > 0:
+            scored.append((score, p))
+    if scored:
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top = [p for s, p in scored if s == scored[0][0]]
+        return random.choice(top)
+    return random.choice(files)
+
+
 def build_looped_music(
     music_path: Path,
     total_duration_s: float,

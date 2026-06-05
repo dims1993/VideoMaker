@@ -92,16 +92,10 @@ def build_scripts_zip(channel_id: str, videos: list[dict[str, Any]]) -> Path:
 
 
 def build_transcripts_zip(channel_id: str, videos: list[dict[str, Any]], *, lang: str = "es") -> Path:
-    """
-    scripts.zip basado en transcripciones (youtube-transcript-api).
-    Guarda un TXT por vídeo con el transcript si está disponible.
-    """
+    """scripts.zip con transcripciones (YouTube Data API captions por defecto)."""
+    from videomaker.youtube.transcript_fetch import fetch_video_transcript
+
     out = channel_assets_dir(channel_id) / "scripts.zip"
-    try:
-        from youtube_transcript_api import YouTubeTranscriptApi  # type: ignore
-    except Exception as e:
-        raise RuntimeError("Falta youtube-transcript-api en el venv.") from e
-    ytt = YouTubeTranscriptApi()
 
     with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as z:
         manifest = {"channel_id": channel_id, "count": len(videos), "lang": lang}
@@ -111,11 +105,7 @@ def build_transcripts_zip(channel_id: str, videos: list[dict[str, Any]], *, lang
             title = v.get("title") or vid
             if not vid:
                 continue
-            try:
-                rows = ytt.fetch(vid, languages=[lang, "es", "en"])
-                text = "\n".join((r.get("text") or "").strip() for r in rows if (r.get("text") or "").strip()).strip()
-            except Exception:
-                text = ""
+            text, _err, _method = fetch_video_transcript(vid, lang=lang)
             if not text:
                 continue
             z.writestr(f"{_safe_name(title)}_{_safe_name(vid)}.txt", text)

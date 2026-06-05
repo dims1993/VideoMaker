@@ -1,0 +1,14 @@
+name = "videomaker-youtube-transcript"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+workers_dev = true
+
+# Si tienes varias cuentas CF, descomenta y pega el Account ID del dashboard:
+# account_id = "d2a236dc9b1e2091014ce768456523d0"
+
+# Opcional: restricción de origen (descomenta y pon tu dominio de producción)
+# [vars]
+# ALLOWED_ORIGIN = "https://tu-app.com"
+
+# Secreto recomendado en producción:
+#   npx wrangler secret put TRANSCRIPT_PROXY_SECRET

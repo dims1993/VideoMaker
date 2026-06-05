@@ -60,12 +60,16 @@ def _save_raw(data: dict[str, Any]) -> None:
 
 def _ensure_bundled_presets(raw: dict[str, Any]) -> bool:
     """Inyecta las plantillas incluidas si no están en disco. Devuelve True si hubo cambios."""
-    ids = {it.get("id") for it in raw.get("items", []) if isinstance(it, dict)}
+    items = raw.get("items", [])
+    if not isinstance(items, list):
+        items = []
+        raw["items"] = items
+    ids = {it.get("id") for it in items if isinstance(it, dict)}
     changed = False
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     if BUNDLED_PRESET_ID not in ids:
-        raw.setdefault("items", []).append(
+        items.append(
             {
                 "id": BUNDLED_PRESET_ID,
                 "name": BUNDLED_PRESET_NAME,
@@ -76,9 +80,21 @@ def _ensure_bundled_presets(raw: dict[str, Any]) -> bool:
             }
         )
         changed = True
+    else:
+        # Sync bundled preset content (avoid stale over-prompted versions).
+        for it in items:
+            if isinstance(it, dict) and it.get("id") == BUNDLED_PRESET_ID and it.get("bundled") is True:
+                if (it.get("user_extra") or "") != YOUTUBE_PSYCH_FINANCE_USER_EXTRA or (it.get("system_extra") or "") != "":
+                    it["name"] = BUNDLED_PRESET_NAME
+                    it["system_extra"] = ""
+                    it["user_extra"] = YOUTUBE_PSYCH_FINANCE_USER_EXTRA
+                    it.setdefault("created_at", now)
+                    it["updated_at"] = now
+                    changed = True
+                break
 
     if BUNDLED_REFLECTIVE_ID not in ids:
-        raw.setdefault("items", []).append(
+        items.append(
             {
                 "id": BUNDLED_REFLECTIVE_ID,
                 "name": BUNDLED_REFLECTIVE_NAME,
@@ -89,6 +105,17 @@ def _ensure_bundled_presets(raw: dict[str, Any]) -> bool:
             }
         )
         changed = True
+    else:
+        for it in items:
+            if isinstance(it, dict) and it.get("id") == BUNDLED_REFLECTIVE_ID and it.get("bundled") is True:
+                if (it.get("user_extra") or "") != REFLECTIVE_10MIN_USER_EXTRA or (it.get("system_extra") or "") != "":
+                    it["name"] = BUNDLED_REFLECTIVE_NAME
+                    it["system_extra"] = ""
+                    it["user_extra"] = REFLECTIVE_10MIN_USER_EXTRA
+                    it.setdefault("created_at", now)
+                    it["updated_at"] = now
+                    changed = True
+                break
 
     return changed
 

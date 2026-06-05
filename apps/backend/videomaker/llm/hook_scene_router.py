@@ -8,9 +8,20 @@ import re
 from pathlib import Path
 from typing import Any
 
-from videomaker.core.hook_router_settings_store import read_hook_router_settings
+from videomaker.core.hook_router_settings_store import (
+    effective_hook_system_prompt_override,
+    read_hook_router_settings,
+)
+from videomaker.core.metadata_settings_store import read_metadata_settings
 from videomaker.core.script_bundle import extract_outline_and_body, read_script_bundle
+from videomaker.llm.hook_retention_router import (
+    build_retention_router_bundle,
+    normalize_platform,
+    normalize_visual_energy,
+    resolve_talking_head_after_sec,
+)
 from videomaker.llm.hook_router_presets import FINANCE_VISUAL_STYLES, FINANCE_STYLE_IDS
+from videomaker.llm.output_language import normalize_language_code
 from videomaker.pipeline.models import PipelineInputs
 
 _PATTERN_ACT2 = re.compile(
@@ -32,15 +43,20 @@ _HOOK_TYPE_TO_FINANCE_STYLE: dict[str, str] = {
 
 
 def read_metadata_hook_hints(work_dir: Path) -> dict[str, Any]:
-    """Lee pistas de gancho / producción desde pipeline/metadata.json (si existe)."""
-    p = work_dir / "pipeline" / "metadata.json"
-    if not p.is_file():
-        return {}
-    try:
-        md = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    if not isinstance(md, dict):
+    """Pistas de gancho desde ``packaging.json`` (hook-first) o ``metadata.json``."""
+    md: dict[str, Any] = {}
+    for name in ("packaging.json", "metadata.json"):
+        p = work_dir / "pipeline" / name
+        if not p.is_file():
+            continue
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                md = raw
+                break
+        except Exception:
+            continue
+    if not md:
         return {}
     ed = md.get("editorial") if isinstance(md.get("editorial"), dict) else {}
     prod = md.get("production") if isinstance(md.get("production"), dict) else {}
@@ -71,6 +87,241 @@ def _metadata_hook_context_lines(hints: dict[str, Any]) -> str:
     if hints.get("visual_style_reference"):
         lines.append(f"production.visual_style_reference: {hints['visual_style_reference']}")
     return "\n".join(lines)
+
+
+def _thumbnail_narrative_lines(work_dir: Path) -> str:
+    """Carry thumbnail narrative spine into hook router context."""
+    pj = work_dir / "pipeline" / "prompt.json"
+    if not pj.is_file():
+        return ""
+    try:
+        raw = json.loads(pj.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    tn = raw.get("thumbnail_narrative") if isinstance(raw, dict) else None
+    if not isinstance(tn, dict):
+        return ""
+    core = str(tn.get("core_contrast") or "").strip()
+    role = str(tn.get("viewer_role") or "").strip()
+    envy = str(tn.get("envy_target") or "").strip()
+    emo = str(tn.get("emotion") or "").strip()
+    if not (core or role or envy or emo):
+        return ""
+    return "\n".join(
+        [
+            "thumbnail_narrative (spine; hook must feel like thumbnail story):",
+            f"- core_contrast: {core or '—'}",
+            f"- viewer_role: {role or '—'}",
+            f"- envy_target: {envy or '—'}",
+            f"- emotion: {emo or '—'}",
+        ]
+    ).strip()
+
+
+def _scroll_stop_factors_lines(work_dir: Path) -> str:
+    """Carry scroll-stop factors into hook router context."""
+    pj = work_dir / "pipeline" / "prompt.json"
+    if not pj.is_file():
+        return ""
+    try:
+        raw = json.loads(pj.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    ssf = raw.get("scroll_stop_factors") if isinstance(raw, dict) else None
+    if not isinstance(ssf, list):
+        return ""
+    vals = [str(x).strip() for x in ssf if str(x).strip()][:10]
+    if not vals:
+        return ""
+    return "\n".join(
+        [
+            "scroll_stop_factors (spine; drive subtitle emphasis + pattern interrupts):",
+            "- " + ", ".join(vals),
+        ]
+    ).strip()
+
+
+def _viewer_state_lines(work_dir: Path) -> str:
+    """Carry audience emotional state into hook router context."""
+    pj = work_dir / "pipeline" / "prompt.json"
+    if not pj.is_file():
+        return ""
+    try:
+        raw = json.loads(pj.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(raw, dict):
+        return ""
+    vsb = raw.get("viewer_state_before_click")
+    vsa = raw.get("viewer_state_after_video")
+    lines: list[str] = []
+    if isinstance(vsb, dict) and vsb:
+        pairs = []
+        for k, v in vsb.items():
+            kk = str(k).strip()
+            if not kk:
+                continue
+            try:
+                n = int(float(v))  # type: ignore[arg-type]
+            except Exception:
+                continue
+            n = max(0, min(100, n))
+            pairs.append((kk, n))
+        if pairs:
+            pairs.sort(key=lambda x: x[1], reverse=True)
+            lines.append("viewer_state_before_click (spine; hook calibration):")
+            lines.append("- " + ", ".join([f"{k}:{n}" for k, n in pairs[:8]]))
+    if isinstance(vsa, dict) and vsa:
+        pairs = []
+        for k, v in vsa.items():
+            kk = str(k).strip()
+            if not kk:
+                continue
+            try:
+                n = int(float(v))  # type: ignore[arg-type]
+            except Exception:
+                continue
+            n = max(0, min(100, n))
+            pairs.append((kk, n))
+        if pairs:
+            pairs.sort(key=lambda x: x[1], reverse=True)
+            lines.append("viewer_state_after_video (spine; resolution color):")
+            lines.append("- " + ", ".join([f"{k}:{n}" for k, n in pairs[:8]]))
+    return "\n".join(lines).strip()
+
+
+def _energy_curve_lines(work_dir: Path) -> str:
+    """Carry energy curve into hook router context."""
+    pj = work_dir / "pipeline" / "prompt.json"
+    if not pj.is_file():
+        return ""
+    try:
+        raw = json.loads(pj.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    ec = raw.get("energy_curve") if isinstance(raw, dict) else None
+    if not isinstance(ec, list):
+        return ""
+    vals = [str(x).strip() for x in ec if str(x).strip()][:12]
+    if not vals:
+        return ""
+    return "\n".join(
+        [
+            "energy_curve (spine; drive cut/motion/music/subtitle intensity):",
+            "- " + " → ".join(vals),
+        ]
+    ).strip()
+
+
+def _visual_density_lines(work_dir: Path) -> str:
+    """Carry visual density rules into hook router context."""
+    pj = work_dir / "pipeline" / "prompt.json"
+    if not pj.is_file():
+        return ""
+    try:
+        raw = json.loads(pj.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    vd = raw.get("visual_density") if isinstance(raw, dict) else None
+    if not isinstance(vd, dict) or not vd:
+        return ""
+    rows = []
+    for k, v in vd.items():
+        kk = str(k).strip()
+        vv = str(v).strip()
+        if not kk or not vv:
+            continue
+        rows.append(f"- {kk}: {vv}")
+        if len(rows) >= 10:
+            break
+    if not rows:
+        return ""
+    return "\n".join(
+        [
+            "visual_density (spine; drive cut frequency + subtitle aggressiveness):",
+            *rows,
+        ]
+    ).strip()
+
+
+def _credibility_rules_lines(work_dir: Path) -> str:
+    """Carry credibility rules into hook router context (anti-ragebait)."""
+    pj = work_dir / "pipeline" / "prompt.json"
+    if not pj.is_file():
+        return ""
+    try:
+        raw = json.loads(pj.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    cr = raw.get("credibility_rules") if isinstance(raw, dict) else None
+    if not isinstance(cr, dict) or not cr:
+        return ""
+    rows = []
+    for k, v in cr.items():
+        kk = str(k).strip()
+        if not kk:
+            continue
+        vv = v if isinstance(v, bool) else str(v).strip().lower() in ("true", "1", "yes", "y", "si", "sí")
+        rows.append(f"- {kk}: {str(vv).lower()}")
+        if len(rows) >= 12:
+            break
+    if not rows:
+        return ""
+    return "\n".join(
+        [
+            "credibility_rules (spine; anti-ragebait; avoid overclaiming):",
+            *rows,
+        ]
+    ).strip()
+
+
+def _hook_spine_lines(work_dir: Path) -> str:
+    """Extra spine for Hook Scene Router: triggers, symbols, energy."""
+    pj = work_dir / "pipeline" / "prompt.json"
+    if not pj.is_file():
+        return ""
+    try:
+        raw = json.loads(pj.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(raw, dict):
+        return ""
+    lines: list[str] = []
+    pt = str(raw.get("primary_trigger") or "").strip()
+    ts = raw.get("trigger_stack") if isinstance(raw.get("trigger_stack"), list) else []
+    vals = [str(x).strip() for x in ts if str(x).strip()][:8] if isinstance(ts, list) else []
+    if pt or vals:
+        lines.append("emotional_triggers (spine):")
+        if pt:
+            lines.append(f"- primary_trigger: {pt}")
+        if vals:
+            lines.append(f"- trigger_stack: {', '.join(vals)}")
+    de = str(raw.get("dominant_emotion") or "").strip()
+    if de:
+        lines.append(f"dominant_emotion (spine): {de}")
+    tribe = str(raw.get("tribe_boundary") or "").strip()
+    if tribe:
+        lines.append(f"tribe_boundary (spine): {tribe}")
+    va = str(raw.get("visual_anchor") or "").strip()
+    if va:
+        lines.append(f"visual_anchor (spine): {va}")
+    vs = raw.get("visual_symbols") if isinstance(raw.get("visual_symbols"), list) else []
+    if isinstance(vs, list) and vs:
+        rows = []
+        for r in vs:
+            if not isinstance(r, dict):
+                continue
+            sym = str(r.get("symbol") or "").strip()
+            meaning = str(r.get("meaning") or "").strip()
+            if not sym and not meaning:
+                continue
+            rows.append(f"- {sym}: {meaning}".strip())
+            if len(rows) >= 6:
+                break
+        if rows:
+            lines.append("visual_symbols (spine):")
+            lines.extend(rows)
+    return "\n".join(lines).strip()
 
 
 def narrative_preset_from_work(work_dir: Path) -> str | None:
@@ -246,7 +497,8 @@ def _run_router_llm(
     inputs: PipelineInputs,
     metadata_context: str = "",
 ) -> dict[str, Any]:
-    selected = (inputs.provider or os.environ.get("VIDEOMAKER_LLM_PROVIDER") or "openai").lower()
+    from videomaker.llm.llm_routing import call_production_llm, resolve_production_model
+
     sys_base = (system_extra.strip() or _default_router_system_prompt())
     ctx = f"Categoría narrativa sesión (si aplica): {narrative_preset or 'no indicada'}.\n\n--- GANCHO (Acto 1) ---\n{hook_text}"
     if metadata_context.strip():
@@ -263,35 +515,55 @@ def _run_router_llm(
     )
 
     def call_llm() -> str:
-        if selected == "ollama":
-            from videomaker.llm.providers.ollama import ollama_chat
-
-            return ollama_chat(
-                system=sys_base,
-                user=ctx,
-                model=inputs.model or os.environ.get("OLLAMA_MODEL", "llama3.2:latest"),
-                response_json=json_mode,
-                temperature=meta_temp,
-            ).strip()
-
-        if selected == "openai":
-            from videomaker.llm.providers.openai_compat import openai_compat_chat
-
-            return openai_compat_chat(
-                system=sys_base,
-                user=ctx,
-                model=inputs.model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-                response_json=json_mode,
-                temperature=meta_temp,
-            ).strip()
-
-        raise ValueError(f"Proveedor LLM no soportado: {selected}")
+        return call_production_llm(
+            system=sys_base,
+            user=ctx,
+            model=resolve_production_model(inputs.model),
+            response_json=json_mode,
+            temperature=meta_temp,
+        )
 
     raw = call_llm()
     try:
         return _parse_router_llm_json(raw)
     except ValueError as e:
         raise RuntimeError(f"Hook Router LLM: {e}") from e
+
+
+def _metadata_target_platform(work_dir: Path) -> str | None:
+    st = read_metadata_settings(work_dir)
+    tp = str(st.get("target_platform") or "").strip().lower()
+    return tp or None
+
+
+def _enrich_with_finance_preset(out: dict[str, Any], finance_sel: str) -> dict[str, Any]:
+    """Aplica override de estilo finanzas y enriquece visual_direction desde catálogo."""
+    cl = out.get("classification") if isinstance(out.get("classification"), dict) else {}
+    sid = str(cl.get("finance_style_id") or "deep_documentary").strip().lower()
+    if finance_sel != "auto" and finance_sel in FINANCE_STYLE_IDS:
+        sid = finance_sel
+        cl = dict(cl)
+        cl["finance_style_id"] = sid
+        cl["style_resolution"] = "settings_fixed"
+        out["classification"] = cl
+    preset = FINANCE_VISUAL_STYLES.get(sid, FINANCE_VISUAL_STYLES["deep_documentary"])
+    vd = out.get("visual_direction") if isinstance(out.get("visual_direction"), dict) else {}
+    out["visual_direction"] = {
+        **vd,
+        "label": vd.get("label") or preset.get("label"),
+        "lighting": vd.get("lighting") or preset.get("lighting"),
+        "composition": vd.get("composition") or preset.get("composition"),
+        "color_palette": vd.get("color_palette") or preset.get("color_palette"),
+        "typography_hint": vd.get("typography_hint") or preset.get("typography_hint"),
+        "editing_fps_hint": vd.get("editing_fps_hint") or preset.get("editing_fps_hint"),
+    }
+    bridge = out.get("bridge_to_images") if isinstance(out.get("bridge_to_images"), dict) else {}
+    if not str(bridge.get("ia_keywords") or "").strip():
+        bridge = {**bridge, "ia_keywords": preset.get("ia_keywords")}
+    if not str(bridge.get("prompt_tone") or "").strip():
+        bridge = {**bridge, "prompt_tone": preset.get("opening_architecture_hint")}
+    out["bridge_to_images"] = bridge
+    return out
 
 
 def build_router_bundle(
@@ -301,156 +573,135 @@ def build_router_bundle(
     inputs: PipelineInputs,
 ) -> dict[str, Any]:
     settings = read_hook_router_settings(work_dir)
-    mode = str(settings.get("mode") or "template").strip().lower()
+    mode = str(settings.get("mode") or "llm").strip().lower()
     if mode not in ("llm", "template"):
-        mode = "template"
+        mode = "llm"
 
     finance_sel = str(settings.get("finance_style") or "auto").strip().lower()
     if finance_sel not in ("auto",) + FINANCE_STYLE_IDS:
         finance_sel = "auto"
+
+    plat_setting = str(settings.get("platform") or "auto").strip().lower()
+    energy_setting = str(settings.get("visual_energy") or "auto").strip().lower()
+    meta_platform = _metadata_target_platform(work_dir)
+    platform = normalize_platform(
+        None if plat_setting == "auto" else plat_setting,
+        meta_platform,
+    )
+    visual_energy = normalize_visual_energy(
+        None if energy_setting == "auto" else energy_setting,
+        platform,
+    )
 
     narrative_preset = narrative_preset_from_work(work_dir)
     hook_text = extract_hook_narration(work_dir, script_text)
     if not hook_text.strip():
         raise ValueError("No se pudo extraer texto del gancho (Acto 1). Revisa guion.txt / script.json.")
 
-    sys_override = str(settings.get("system_prompt") or "").strip()
+    sys_override = effective_hook_system_prompt_override(settings)
     md_hints = read_metadata_hook_hints(work_dir)
     meta_ctx = _metadata_hook_context_lines(md_hints)
+    tn_ctx = _thumbnail_narrative_lines(work_dir)
+    if tn_ctx:
+        meta_ctx = (meta_ctx + "\n" if meta_ctx else "") + tn_ctx
+    ssf_ctx = _scroll_stop_factors_lines(work_dir)
+    if ssf_ctx:
+        meta_ctx = (meta_ctx + "\n" if meta_ctx else "") + ssf_ctx
+    vs_ctx = _viewer_state_lines(work_dir)
+    if vs_ctx:
+        meta_ctx = (meta_ctx + "\n" if meta_ctx else "") + vs_ctx
+    ec_ctx = _energy_curve_lines(work_dir)
+    if ec_ctx:
+        meta_ctx = (meta_ctx + "\n" if meta_ctx else "") + ec_ctx
+    vd_ctx = _visual_density_lines(work_dir)
+    if vd_ctx:
+        meta_ctx = (meta_ctx + "\n" if meta_ctx else "") + vd_ctx
+    cr_ctx = _credibility_rules_lines(work_dir)
+    if cr_ctx:
+        meta_ctx = (meta_ctx + "\n" if meta_ctx else "") + cr_ctx
+    hs_ctx = _hook_spine_lines(work_dir)
+    if hs_ctx:
+        meta_ctx = (meta_ctx + "\n" if meta_ctx else "") + hs_ctx
+    audience = str(md_hints.get("target_audience") or "").strip()
+    lang = normalize_language_code(inputs.lang or "es")
 
-    # Finanzas: usar catálogo de estilos (plantilla o LLM que devuelve finance_style_id)
-    use_finance = (narrative_preset or "").lower() == "finanzas"
+    th_after = resolve_talking_head_after_sec(
+        platform, settings.get("talking_head_after_sec")
+    )
+    from videomaker.llm.body_scene_router import _extract_body_text
+    from videomaker.llm.hook_audio_density import densify_hook_micro_beats
+    from videomaker.llm.section_density_plan import (
+        build_section_density_plan,
+        hook_max_beats_for_platform,
+    )
 
-    out: dict[str, Any] = {
-        "version": 1,
-        "narrative_preset": narrative_preset,
-        "hook_character_count": len(hook_text),
-        "settings": {"mode": mode, "finance_style": finance_sel},
+    body_text = _extract_body_text(script_text)
+    plan = build_section_density_plan(
+        work_dir,
+        script_text=script_text,
+        hook_text=hook_text,
+        body_text=body_text,
+    )
+    beat_cap = hook_max_beats_for_platform(platform, plan)
+
+    out = build_retention_router_bundle(
+        hook_text=hook_text,
+        inputs=inputs,
+        platform=platform,
+        visual_energy=visual_energy,
+        mode=mode,
+        system_override=sys_override,
+        metadata_context=meta_ctx,
+        audience_context=audience,
+        narrative_preset=narrative_preset,
+        lang=lang,
+        talking_head_after_sec=th_after,
+        max_beats_cap=beat_cap,
+        hook_duration_sec=plan.hook_pool_s,
+    )
+    mb = out.get("micro_beats")
+    if isinstance(mb, list):
+        mb = densify_hook_micro_beats(
+            mb,
+            hook_text,
+            plan,
+            platform=platform,
+            visual_energy=visual_energy,
+        )
+        from videomaker.llm.hook_visual_sequence import finalize_hook_visual_sequence
+
+        parsed_seq = out.get("visual_sequence_plan") if isinstance(out.get("visual_sequence_plan"), dict) else None
+        mb, seq_plan = finalize_hook_visual_sequence(
+            mb,
+            target_beats=beat_cap,
+            hook_pool_s=plan.hook_pool_s,
+            parsed_plan=parsed_seq,
+        )
+        from videomaker.llm.narrative_visual_rhythm import apply_hook_narrative_rhythm
+        from videomaker.llm.section_anchor_shot import apply_hook_anchor_hierarchy
+
+        mb, anchor_plan = apply_hook_anchor_hierarchy(mb, parsed_seq)
+        mb, rhythm_summary = apply_hook_narrative_rhythm(mb, plan.hook_pool_s)
+        if isinstance(seq_plan, dict):
+            seq_plan["narrative_rhythm"] = rhythm_summary
+            seq_plan["anchor_shot"] = anchor_plan
+        out["micro_beats"] = mb
+        out["visual_sequence_plan"] = seq_plan
+        out["narrative_rhythm"] = rhythm_summary
+        out["anchor_shot"] = anchor_plan
+        out["micro_beat_count"] = len(mb)
+    out["visual_density_plan"] = plan.to_dict()
+    out["settings"] = {
+        "mode": mode,
+        "finance_style": finance_sel,
+        "platform": platform,
+        "visual_energy": visual_energy,
     }
     mb = {k: v for k, v in md_hints.items() if v not in (None, [], {})}
     if mb:
         out["metadata_bridge"] = mb
 
-    if use_finance:
-        if mode == "template":
-            if finance_sel != "auto":
-                sid = finance_sel
-                tpl_method = "template_fixed"
-                style_resolution = "template_fixed"
-            else:
-                ht = str(md_hints.get("hook_type") or "").strip().lower()
-                mapped = _HOOK_TYPE_TO_FINANCE_STYLE.get(ht) if ht else None
-                if mapped:
-                    sid = mapped
-                    tpl_method = "metadata_hook_type"
-                    style_resolution = "metadata_hook_type"
-                else:
-                    sid = classify_finance_hook_style(hook_text)
-                    tpl_method = "template_keywords"
-                    style_resolution = "keyword_classifier"
-            preset = FINANCE_VISUAL_STYLES.get(sid, FINANCE_VISUAL_STYLES["deep_documentary"])
-            arch_map = {
-                "deep_documentary": "Documentary_Intimate",
-                "data_minimalist": "Data_Driven",
-                "financial_noir": "Noir_Systemic",
-                "intimate_pov": "POV_Story",
-            }
-            out["classification"] = {
-                "method": tpl_method,
-                "style_resolution": style_resolution,
-                "opening_architecture": arch_map.get(sid, "Documentary_Intimate"),
-                "finance_style_id": sid,
-            }
-            out["visual_direction"] = {
-                "label": preset.get("label"),
-                "lighting": preset.get("lighting"),
-                "composition": preset.get("composition"),
-                "color_palette": preset.get("color_palette"),
-                "typography_hint": preset.get("typography_hint"),
-                "editing_fps_hint": preset.get("editing_fps_hint"),
-            }
-            out["bridge_to_images"] = {
-                "ia_keywords": preset.get("ia_keywords"),
-                "prompt_tone": preset.get("opening_architecture_hint"),
-            }
-        else:
-            parsed = _run_router_llm(
-                hook_text=hook_text,
-                narrative_preset=narrative_preset,
-                system_extra=sys_override,
-                inputs=inputs,
-                metadata_context=meta_ctx,
-            )
-            sid = str(parsed.get("finance_style_id") or "").strip().lower()
-            if sid not in FINANCE_STYLE_IDS:
-                sid = classify_finance_hook_style(hook_text)
-            preset = FINANCE_VISUAL_STYLES.get(sid, FINANCE_VISUAL_STYLES["deep_documentary"])
-            out["classification"] = {
-                "method": "llm",
-                "style_resolution": "llm",
-                "opening_architecture": parsed.get("opening_architecture"),
-                "finance_style_id": sid,
-                "psychological_impact": parsed.get("psychological_impact"),
-            }
-            out["visual_direction"] = {
-                "label": parsed.get("visual_route_label") or preset.get("label"),
-                "lighting": parsed.get("lighting_notes") or preset.get("lighting"),
-                "composition": parsed.get("composition_notes") or preset.get("composition"),
-                "color_palette": parsed.get("color_palette") or preset.get("color_palette"),
-                "typography_hint": parsed.get("typography_hint") or preset.get("typography_hint"),
-                "editing_fps_hint": parsed.get("editing_fps_hint") or preset.get("editing_fps_hint"),
-            }
-            merged_kw = parsed.get("ia_keyword_bundle") or preset.get("ia_keywords")
-            out["bridge_to_images"] = {
-                "ia_keywords": merged_kw,
-                "prompt_tone": preset.get("opening_architecture_hint"),
-            }
-            out["llm_raw"] = {k: v for k, v in parsed.items() if k != "llm_raw"}
-    else:
-        # No finanzas: solo LLM genérico o plantilla mínima
-        if mode == "llm":
-            parsed = _run_router_llm(
-                hook_text=hook_text,
-                narrative_preset=narrative_preset,
-                system_extra=sys_override,
-                inputs=inputs,
-                metadata_context=meta_ctx,
-            )
-            out["classification"] = {
-                "method": "llm",
-                "style_resolution": "llm",
-                "opening_architecture": parsed.get("opening_architecture"),
-            }
-            out["visual_direction"] = {
-                "label": parsed.get("visual_route_label"),
-                "lighting": parsed.get("lighting_notes"),
-                "composition": parsed.get("composition_notes"),
-                "color_palette": parsed.get("color_palette"),
-                "typography_hint": parsed.get("typography_hint"),
-                "editing_fps_hint": parsed.get("editing_fps_hint"),
-            }
-            out["bridge_to_images"] = {"ia_keywords": parsed.get("ia_keyword_bundle")}
-            out["llm_raw"] = parsed
-        else:
-            sid = classify_finance_hook_style(hook_text)
-            preset = FINANCE_VISUAL_STYLES[sid]
-            out["classification"] = {
-                "method": "template_keywords_generic",
-                "style_resolution": "keyword_classifier",
-                "finance_style_id": sid,
-                "note": "Categoría no finanzas: se usó clasificador de estilo tipo financiero como aproximación.",
-            }
-            out["visual_direction"] = {
-                "label": preset.get("label"),
-                "lighting": preset.get("lighting"),
-                "composition": preset.get("composition"),
-                "color_palette": preset.get("color_palette"),
-                "typography_hint": preset.get("typography_hint"),
-                "editing_fps_hint": preset.get("editing_fps_hint"),
-            }
-            out["bridge_to_images"] = {"ia_keywords": preset.get("ia_keywords")}
-
-    out["hook_excerpt"] = hook_text[:2500]
+    out = _enrich_with_finance_preset(out, finance_sel)
     return out
 
 
@@ -461,6 +712,18 @@ def run_hook_scene_router_step(work_dir: Path, script_text: str, inputs: Pipelin
     out = d / "hook_scene_router.json"
     out.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
     return out
+
+
+def _beat_image_prompt_text(beat: dict[str, Any], *, global_kw: str, label: str) -> str:
+    from videomaker.llm.hook_retention_router import resolve_image_prompt_for_beat
+
+    cinematic = resolve_image_prompt_for_beat(beat).strip()
+    style = str(beat.get("visual_style") or "").strip().lower()
+    if style == "noir":
+        cinematic = f"{cinematic}, film noir, high contrast shadows"
+    elif style == "kinetic":
+        cinematic = f"{cinematic}, kinetic energy, sharp detail"
+    return cinematic
 
 
 def merge_hook_router_into_image_prompts(work_dir: Path) -> dict[str, Any]:
@@ -484,9 +747,51 @@ def merge_hook_router_into_image_prompts(work_dir: Path) -> dict[str, Any]:
         label = str(vd.get("label") or "").strip()
 
     hook_ex = str(router.get("hook_excerpt") or "")[:1200] if isinstance(router, dict) else ""
+    beats = router.get("micro_beats") if isinstance(router, dict) else None
+
+    from videomaker.llm.image_prompt_hybrid import (
+        _beat_duration_estimated,
+        _timing_relative_from_beats,
+    )
 
     prompts: list[dict[str, Any]] = []
-    if ia_kw:
+    if isinstance(beats, list) and beats:
+        beat_dicts = [b for b in beats if isinstance(b, dict)]
+        hook_weights = [_beat_duration_estimated(b) for b in beat_dicts]
+        for beat_index, beat in enumerate(beat_dicts):
+            idx = int(beat.get("index", beat_index))
+            prompts.append(
+                {
+                    "track": "insert",
+                    "act": "hook",
+                    "role": f"hook_beat_{idx}",
+                    "layer": "hook_micro_beat",
+                    "timing": _timing_relative_from_beats(
+                        beat, beat_index=beat_index, weights=hook_weights
+                    ),
+                    "purpose": beat.get("purpose"),
+                    "intensity": beat.get("intensity"),
+                    "audio": beat.get("audio"),
+                    "emotion": beat.get("emotion"),
+                    "scene_type": beat.get("scene_type"),
+                    "narrator_visible": beat.get("narrator_visible"),
+                    "transition_to_next": beat.get("transition_to_next"),
+                    "viewer_state": beat.get("viewer_state"),
+                    "viewer_pacing_hint": beat.get("viewer_pacing_hint"),
+                    "camera": beat.get("camera"),
+                    "prompt_style": beat.get("prompt_style") or "cinematic_narrative",
+                    "text": _beat_image_prompt_text(beat, global_kw=ia_kw, label=label),
+                    "text_metadata": {
+                        "emotion": beat.get("emotion"),
+                        "scene_type": beat.get("scene_type"),
+                        "intensity": beat.get("intensity"),
+                        "audio": beat.get("audio"),
+                        "transition_to_next": beat.get("transition_to_next"),
+                        "viewer_state": beat.get("viewer_state"),
+                    },
+                }
+            )
+    elif ia_kw:
         prompts.append(
             {
                 "role": "hook_establishing",
@@ -503,11 +808,19 @@ def merge_hook_router_into_image_prompts(work_dir: Path) -> dict[str, Any]:
             }
         )
 
+    router_version = int(router.get("version", 1)) if isinstance(router, dict) else 1
     bundle = {
-        "version": 1,
+        "version": 2 if router_version >= 2 else 1,
         "source": "hook_scene_router",
         "router_ref": "pipeline/hook_scene_router.json",
         "classification": router.get("classification") if isinstance(router, dict) else {},
+        "retention_analysis": router.get("retention_analysis") if isinstance(router, dict) else None,
+        "intensity_curve": router.get("intensity_curve") if isinstance(router, dict) else None,
+        "intensity_arc": router.get("intensity_arc") if isinstance(router, dict) else None,
+        "audio_design": router.get("audio_design") if isinstance(router, dict) else None,
+        "transition_rhythm": router.get("transition_rhythm") if isinstance(router, dict) else None,
+        "viewer_state_tracking": router.get("viewer_state_tracking") if isinstance(router, dict) else None,
+        "micro_beat_count": len(prompts),
         "prompts": prompts,
     }
     out_p = work_dir / "pipeline" / "image_prompts.json"

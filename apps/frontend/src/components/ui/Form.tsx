@@ -1,7 +1,24 @@
 import type React from "react";
 
-export function Label({ children }: { children: React.ReactNode }) {
-  return <label className="block text-xs font-medium text-slate-500">{children}</label>;
+export function Label({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <label
+      className={[
+        "block text-xs font-medium text-slate-500",
+        className,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
+      {children}
+    </label>
+  );
 }
 
 export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {

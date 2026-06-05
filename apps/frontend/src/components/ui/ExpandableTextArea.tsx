@@ -100,7 +100,7 @@ export function ExpandableTextArea({
   onChange: (v: string) => void;
   placeholder?: string;
   modalTitle: string;
-  variant?: "form" | "output" | "outputLight";
+  variant?: "form" | "output" | "outputLight" | "inferred";
   /** Solo lectura: no abre el editor a pantalla completa. */
   disabled?: boolean;
   /** Tooltip cuando está disabled (si no se pasa, mensaje genérico). */
@@ -108,7 +108,8 @@ export function ExpandableTextArea({
 }) {
   const [modalOpen, setModalOpen] = useState(false);
   const fullText = value.trim();
-  const previewLimit = variant === "output" || variant === "outputLight" ? 600 : 160;
+  const previewLimit =
+    variant === "output" || variant === "outputLight" || variant === "inferred" ? 600 : 160;
   const preview = fullText.slice(0, previewLimit);
   const hasMore = fullText.length > previewLimit;
 
@@ -117,7 +118,9 @@ export function ExpandableTextArea({
       ? "group relative min-h-[120px] w-full rounded-xl border border-slate-600 bg-slate-800 px-3 py-2 text-left shadow-inner outline-none transition"
       : variant === "outputLight"
         ? "group relative min-h-[120px] w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left shadow-inner outline-none transition"
-      : "group relative w-full rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 transition-all";
+        : variant === "inferred"
+          ? "group relative min-h-[120px] w-full rounded-xl border border-violet-200/90 bg-white px-3 py-2 text-left shadow-sm outline-none transition"
+          : "group relative w-full rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 transition-all";
 
   const interactiveClass = disabled
     ? " cursor-not-allowed opacity-50"
@@ -125,14 +128,16 @@ export function ExpandableTextArea({
       ? " cursor-pointer hover:border-slate-500"
       : variant === "outputLight"
         ? " cursor-pointer hover:border-slate-300"
-        : " cursor-pointer hover:border-slate-400 hover:shadow-sm";
+        : variant === "inferred"
+          ? " cursor-pointer hover:border-violet-300 hover:shadow-sm"
+          : " cursor-pointer hover:border-slate-400 hover:shadow-sm";
 
   const containerClass = `${baseContainerClass}${interactiveClass}`;
 
   const textClass =
     variant === "output"
       ? `block max-h-[280px] overflow-y-auto whitespace-pre-wrap break-words pr-10 font-mono text-xs leading-relaxed ${preview ? "text-slate-200" : "text-slate-500"}`
-      : variant === "outputLight"
+      : variant === "outputLight" || variant === "inferred"
         ? `block max-h-[280px] overflow-y-auto whitespace-pre-wrap break-words pr-10 font-mono text-xs leading-relaxed ${preview ? "text-slate-900" : "text-slate-500"}`
       : `block max-h-[5.5rem] overflow-hidden whitespace-pre-wrap break-words pr-10 font-mono text-xs leading-snug ${
           preview ? "text-slate-300" : "text-slate-500"

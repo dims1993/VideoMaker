@@ -70,15 +70,26 @@ def run_generate_script(
         locale=parse_locale(lang),
         target_minutes=float(minutes),
     )
+    from videomaker.core.image_prompt_writer_settings_store import read_image_prompt_writer_settings
+
+    st = read_image_prompt_writer_settings(work_dir)
+    visual_mode = str(st.get("visual_mode") or "animation").strip().lower()
+    include_broll = visual_mode != "static"
 
     try:
         set_status(work_dir, state="running", step="script", detail="Generando guion…")
+
+        def _progress(detail: str) -> None:
+            set_status(work_dir, state="running", step="script", detail=detail[:240])
+
         text = generate_script(
             bp,
             provider=provider,
             model=model,
             system_extra=system_extra or "",
             user_extra=user_extra or "",
+            include_broll=include_broll,
+            on_progress=_progress,
         )
         (work_dir / "guion.txt").write_text(text, encoding="utf-8")
         write_script_bundle(work_dir, text)
@@ -125,7 +136,35 @@ def run_render_draft(work: str, *, no_music: bool) -> None:
         set_status(work_dir, state="error", step="render", detail="Falta narracion.wav")
         return
     try:
-        set_status(work_dir, state="running", step="render", detail="Renderizando vídeo (MoviePy)…")
+        from videomaker.video.render_progress import clear_render_progress, update_render_progress
+
+        clear_render_progress(work_dir)
+
+        def _on_progress(phase: str, current: int, total: int, message: str) -> None:
+            update_render_progress(
+                work_dir,
+                kind="draft_mp4",
+                phase=phase,
+                current=current,
+                total=total,
+                message=message,
+            )
+            if phase == "segment" and total > 0:
+                set_status(
+                    work_dir,
+                    state="running",
+                    step="render",
+                    detail=f"Render draft: plano {current}/{total} — {message}",
+                )
+            elif phase != "done":
+                set_status(
+                    work_dir,
+                    state="running",
+                    step="render",
+                    detail=f"Render draft — {message}",
+                )
+
+        set_status(work_dir, state="running", step="render", detail="Render draft: iniciando…")
         render_draft_video(
             narr,
             stock_dir,
@@ -133,8 +172,91 @@ def run_render_draft(work: str, *, no_music: bool) -> None:
             work_dir=work_dir,
             pick_music_from_project=not bool(no_music),
             render_no_music=bool(no_music),
+            on_progress=_on_progress,
+        )
+        update_render_progress(
+            work_dir,
+            kind="draft_mp4",
+            phase="done",
+            current=1,
+            total=1,
+            message="Completado",
         )
         set_status(work_dir, state="done", step="render", detail="Vídeo listo.")
+    except Exception as e:
+        set_status(work_dir, state="error", step="render", detail=str(e))
+
+
+def run_render_preview(
+    work: str,
+    *,
+    no_music: bool,
+    max_segments: int = 12,
+    max_duration_s: float = 120.0,
+) -> None:
+    work_dir = safe_work_dir(work)
+    if not (work_dir / "narracion.wav").is_file():
+        set_status(work_dir, state="error", step="render", detail="Falta narracion.wav")
+        return
+    try:
+        from videomaker.video.render import render_preview_video
+        from videomaker.video.render_progress import clear_render_progress, update_render_progress
+
+        clear_render_progress(work_dir)
+
+        def _on_progress(phase: str, current: int, total: int, message: str) -> None:
+            update_render_progress(
+                work_dir,
+                kind="preview_mp4",
+                phase=phase,
+                current=current,
+                total=total,
+                message=message,
+            )
+            if phase == "segment" and total > 0:
+                set_status(
+                    work_dir,
+                    state="running",
+                    step="render",
+                    detail=f"Preview MP4: plano {current}/{total} — {message}",
+                )
+            elif phase == "encode":
+                set_status(
+                    work_dir,
+                    state="running",
+                    step="render",
+                    detail=f"Preview MP4: codificando… ({message})",
+                )
+            elif phase != "done":
+                set_status(
+                    work_dir,
+                    state="running",
+                    step="render",
+                    detail=f"Preview MP4 — {message}",
+                )
+
+        set_status(
+            work_dir,
+            state="running",
+            step="render",
+            detail=f"Preview MP4: iniciando (hasta {max_segments} planos)…",
+        )
+        render_preview_video(
+            work_dir,
+            max_segments=max_segments,
+            max_duration_s=max_duration_s,
+            no_music=bool(no_music),
+            on_progress=_on_progress,
+        )
+        update_render_progress(
+            work_dir,
+            kind="preview_mp4",
+            phase="done",
+            current=1,
+            total=1,
+            message="Completado",
+        )
+        set_status(work_dir, state="done", step="render", detail="Preview MP4 listo (preview_draft.mp4).")
     except Exception as e:
         set_status(work_dir, state="error", step="render", detail=str(e))
 
@@ -412,27 +534,41 @@ def run_create_pipeline(
     step_id: str | None = None,
     prompt_template_id: str | None = None,
     prompt_topic: str | None = None,
+    prompt_video_restrictions: str | None = None,
     script_writer_template_id: str | None = None,
     script_fragment_index: int | None = None,
     render_no_music: bool | None = None,
+    topic_generator_transcript: str | None = None,
+    topic_generator_niche_trends: str | None = None,
+    topic_generator_topic_count: int | None = None,
 ) -> None:
     work_dir = safe_work_dir(work)
     work_dir.mkdir(parents=True, exist_ok=True)
+    from videomaker.llm.output_language import resolve_pipeline_lang
+
+    resolved_lang = resolve_pipeline_lang(work_dir, request_lang=lang or None)
     tid = (prompt_template_id or "").strip() or None
     sw_tid = (script_writer_template_id or "").strip() or None
     pt = "" if prompt_topic is None else str(prompt_topic).strip()
+    pvr = "" if prompt_video_restrictions is None else str(prompt_video_restrictions).strip()
     rnm = False if render_no_music is None else bool(render_no_music)
+    from videomaker.pipeline.duration_policy import clamp_pipeline_minutes
+
     inputs = PipelineInputs(
         keywords=keywords,
         context=context,
-        lang=lang,
-        minutes=float(minutes),
+        lang=resolved_lang,
+        minutes=clamp_pipeline_minutes(minutes),
         provider=provider or "",
         model=model or "",
         prompt_template_id=tid,
         prompt_topic=pt,
+        prompt_video_restrictions=pvr,
         script_writer_template_id=sw_tid,
         script_fragment_index=script_fragment_index,
         render_no_music=rnm,
+        topic_generator_transcript="" if topic_generator_transcript is None else str(topic_generator_transcript),
+        topic_generator_niche_trends="" if topic_generator_niche_trends is None else str(topic_generator_niche_trends),
+        topic_generator_topic_count=8 if topic_generator_topic_count is None else int(topic_generator_topic_count),
     )
     run_pipeline(work_dir, inputs, rerun_step_id=step_id)

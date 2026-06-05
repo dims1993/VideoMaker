@@ -8,6 +8,9 @@
 
 # Core pipeline
 python-dotenv>=1.0.0
+google-generativeai>=0.8.0
+google-genai>=1.0.0
+playwright>=1.40.0
 requests>=2.31.0
 anthropic>=0.25.0
 streamlit>=1.28.0
@@ -15,6 +18,7 @@ fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 jinja2>=3.1.0
 python-multipart>=0.0.9
+pypdf>=4.0.0
 youtube-transcript-api>=1.0.0
 psycopg[binary]>=3.2.0
 redis>=5.0.0
@@ -23,6 +27,7 @@ celery>=5.4.0
 # Video / audio editing (MoviePy 2 cambió la API; el montaje actual usa 1.x)
 moviepy>=1.0.3,<2
 numpy>=1.24.0
+opencv-python-headless>=4.8.0
 # Clonación por MP3 en la UI: librosa + ffmpeg en PATH (Mac: brew install ffmpeg)
 librosa>=0.10.0
 soundfile>=0.12.0

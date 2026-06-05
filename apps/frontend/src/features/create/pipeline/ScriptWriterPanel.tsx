@@ -8,31 +8,85 @@ import {
   type SetStateAction,
 } from "react";
 import { Btn, ExpandableTextArea, Input, Label, Select, TextArea } from "../../../components/ui";
-import {
-  deleteReq,
-  patchJson,
-  postJson,
-  putJson,
-  readApiError,
-} from "../../../services/api";
+import { saveTextWithPicker, suggestedGuionFilename } from "../../../lib/saveTextFile";
+import { patchJson, postJson, putJson } from "../../../services/api";
 import type {
   ScriptWriterLibraryStore,
-  ScriptWriterNarrativePreset,
 } from "../scriptWriter/useScriptWriterLibrary";
+import {
+  clampPipelineMinutes,
+  PIPELINE_TARGET_MAX_MINUTES,
+  PIPELINE_TARGET_MIN_MINUTES,
+} from "../pipelineDuration";
 import type { RunFn } from "../types";
+import { TranscriptsSessionBanner } from "../shared/TranscriptsSessionBanner";
+import { InferredFieldShell } from "../prompt/InferredFieldShell";
 import { PipelineSection as Section } from "./PipelineSection";
 
 // ── AI Script Writer Generator ───────────────────────────────────────────
 function AIScriptWriterGenerator({
   onGenerated,
+  provider,
+  model,
+  workApplied,
+  lang,
 }: {
-  onGenerated: (t: Record<string, unknown>) => void;
+  onGenerated: (t: Record<string, unknown>) => void | Promise<void>;
+  provider: string;
+  model: string;
+  workApplied: string;
+  lang: string;
 }) {
   const [transcriptText, setTranscriptText] = useState("");
   const [fileName, setFileName] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [sessionHint, setSessionHint] = useState(
+    "Carga un documento o pega el contenido primero.",
+  );
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!workApplied || fileName || transcriptText.trim()) return;
+    let cancelled = false;
+
+    setSessionHint("Cargando transcripts desde Analyse…");
+
+    void fetch(
+      `/api/session/transcripts?work=${encodeURIComponent(
+        workApplied,
+      )}&include_combined_text=true`,
+    )
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return (await res.json()) as { combined_text?: string };
+      })
+      .then((data) => {
+        if (cancelled) return;
+        const combined = (data.combined_text ?? "").trim();
+        if (combined) {
+          setTranscriptText(combined);
+          setSessionHint(
+            "Transcripts cargados desde Analyse. Revisa el contenido y genera el template.",
+          );
+        } else {
+          setSessionHint(
+            "No se encontraron transcripts guardados en Analyse. Puedes subir o pegar uno aquí.",
+          );
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSessionHint(
+            "No se pudo cargar transcripts desde Analyse. Puedes subir o pegar uno aquí.",
+          );
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [workApplied, fileName, transcriptText]);
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -51,14 +105,14 @@ function AIScriptWriterGenerator({
       const res = await fetch("/api/script-writer-templates/generate-from-transcript", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript_text: transcriptText }),
+        body: JSON.stringify({ transcript_text: transcriptText, provider, model, work: workApplied, lang }),
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({})) as { detail?: string };
         throw new Error(j.detail ?? `Error ${res.status}`);
       }
       const data = await res.json() as Record<string, unknown>;
-      onGenerated(data);
+      await onGenerated(data);
       setTranscriptText("");
       setFileName("");
       if (fileRef.current) fileRef.current.value = "";
@@ -70,15 +124,15 @@ function AIScriptWriterGenerator({
   };
 
   return (
-    <div className="rounded-xl border border-slate-600 bg-slate-800 p-4 space-y-3">
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3 shadow-sm">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-sm font-semibold tracking-wider capitalize text-white">Generador De Template Con IA</div>
-          <div className="text-[11px] text-slate-400 mt-0.5">
+          <div className="text-sm font-semibold tracking-wider capitalize text-slate-900">Generador De Template Con IA</div>
+          <div className="text-[11px] text-slate-500 mt-0.5">
             Carga las transcripciones del canal y Claude Sonnet analizará el estilo de guion y rellenará todos los campos del template automáticamente.
           </div>
         </div>
-        <span className="shrink-0 rounded-md border border-violet-500/40 bg-violet-950/40 px-2 py-0.5 text-[10px] font-mono text-violet-300">
+        <span className="shrink-0 rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-mono text-slate-700">
           Claude Sonnet
         </span>
       </div>
@@ -87,7 +141,7 @@ function AIScriptWriterGenerator({
         <label className="block text-xs font-medium text-slate-400 mb-1">Documento de transcripciones</label>
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => fileRef.current?.click()}
-            className="rounded-lg border border-slate-600 bg-slate-700 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-600 transition-colors">
+            className="rounded-lg border border-slate-200 bg-slate-100 px-3 py-1.5 text-xs text-slate-900 hover:bg-slate-200 transition-colors">
             Seleccionar archivo
           </button>
           {fileName ? (
@@ -113,18 +167,19 @@ function AIScriptWriterGenerator({
           onChange={(e) => { setTranscriptText(e.target.value); setFileName(""); }}
           placeholder="Pega aquí las transcripciones del canal…"
           rows={4}
-          className="w-full rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 text-xs text-slate-200 placeholder:text-slate-500 focus:border-slate-400 focus:outline-none resize-none"
+          className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-sky-400 focus:outline-none resize-none"
         />
+        <div className="mt-2 text-[11px] text-slate-500">{sessionHint}</div>
       </div>
 
       {error && (
-        <div className="rounded-lg border border-rose-500/40 bg-rose-950/30 px-3 py-2 text-xs text-rose-400">{error}</div>
+        <div className="rounded-lg border border-rose-500/40 bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</div>
       )}
 
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[10px] text-slate-500">Requiere <code className="rounded bg-slate-700 px-1">ANTHROPIC_API_KEY</code> en .env</span>
+        <span className="text-[10px] text-slate-500">Requiere <code className="rounded bg-slate-100 px-1 text-slate-700">ANTHROPIC_API_KEY</code> en .env</span>
         <div className="flex items-center gap-2">
-          {loading && <span className="text-xs text-violet-400 animate-pulse">Claude analizando…</span>}
+          {loading && <span className="text-xs text-amber-600 animate-pulse">Claude analizando…</span>}
           <Btn type="button" className="bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50"
             disabled={loading || !transcriptText.trim()} onClick={handleGenerate}>
             {loading ? "Analizando…" : "Analizar y rellenar template"}
@@ -151,18 +206,16 @@ const FALLBACK_OLLAMA_MODELS = [
 ];
 
 type LlmDefaultsResponse = {
-  llm_provider: string;
-  ollama_model: string;
-  openai_model: string;
+  llm_provider?: string;
+  creative_provider?: string;
+  creative_model?: string;
+  anthropic_model?: string;
+  production_provider?: string;
+  openai_model?: string;
+  ollama_model?: string;
 };
 
-type SavedGuionEntry = {
-  id: string;
-  title: string;
-  created_at: string;
-  byte_len: number;
-  preview: string;
-};
+
 
 export function ScriptWriterPanel({
   run,
@@ -185,12 +238,14 @@ export function ScriptWriterPanel({
   scriptFragmentIndex,
   setScriptFragmentIndex,
   refreshPipeline,
+  onAfterRun,
 }: {
   run: RunFn;
   workApplied: string;
   locked: boolean;
   scriptStepState: string;
   library: ScriptWriterLibraryStore;
+  onAfterRun?: () => void | Promise<void>;
   kw: string;
   setKw: (v: string) => void;
   ctx: string;
@@ -226,16 +281,69 @@ export function ScriptWriterPanel({
   const [narrativePresets, setNarrativePresets] = useState<
     NarrativePresetApi[]
   >([]);
-  const [savedGuiones, setSavedGuiones] = useState<SavedGuionEntry[]>([]);
-  const [saveToLibTitle, setSaveToLibTitle] = useState("");
-  const [selectedSavedId, setSelectedSavedId] = useState("");
-  const fileImportRef = useRef<HTMLInputElement>(null);
   const [scriptEditorFullscreen, setScriptEditorFullscreen] = useState(false);
+  const [scriptWriterMode, setScriptWriterMode] = useState<"choose" | "ia" | "manual">("choose");
   const scriptModalTextareaRef = useRef<HTMLTextAreaElement>(null);
   const scriptUnderlineRef = useRef<HTMLDivElement>(null);
   const underlineHydratedRef = useRef(false);
   const scriptTextRef = useRef("");
   const scriptCaretOffsetRef = useRef<number | null>(null);
+  const [scriptPaths, setScriptPaths] = useState<{
+    work: string;
+    absolute_path: string;
+    guion_relative: string;
+    guion_absolute: string;
+    guion_exists: boolean;
+  } | null>(null);
+  const [savingScript, setSavingScript] = useState(false);
+  const [scriptOnDisk, setScriptOnDisk] = useState<{
+    exists: boolean;
+    source: string | null;
+    chars: number;
+  }>({ exists: false, source: null, chars: 0 });
+
+  const loadScriptMeta = useCallback(async () => {
+    try {
+      const r = await fetch(
+        `/api/pipeline/script-writer?work=${encodeURIComponent(workApplied)}`,
+      );
+      if (!r.ok) {
+        setScriptOnDisk({ exists: false, source: null, chars: 0 });
+        return;
+      }
+      const j = (await r.json()) as {
+        exists?: boolean;
+        source?: string | null;
+        chars?: number;
+      };
+      setScriptOnDisk({
+        exists: !!j.exists,
+        source: j.source ?? null,
+        chars: typeof j.chars === "number" ? j.chars : 0,
+      });
+    } catch {
+      setScriptOnDisk({ exists: false, source: null, chars: 0 });
+    }
+  }, [workApplied]);
+
+  useEffect(() => {
+    void loadScriptMeta();
+  }, [loadScriptMeta, scriptStepState, workApplied]);
+
+  const handleConfirmScript = () =>
+    run("Confirmar guion", async () => {
+      await postJson("/api/pipeline/script-writer/confirm", { work: workApplied });
+      await onAfterRun?.();
+      await refreshPipeline();
+      await loadScriptMeta();
+      await loadScript({ force: true });
+    });
+
+  useEffect(() => {
+    if (lib.scriptWriterTemplateId) {
+      setScriptWriterMode("choose");
+    }
+  }, [lib.scriptWriterTemplateId]);
 
   const _getTextCaretOffset = useCallback((el: HTMLElement): number => {
     const sel = window.getSelection();
@@ -339,6 +447,87 @@ export function ScriptWriterPanel({
     [underlineStorageKey],
   );
 
+  const plainTextFromStoredHtml = useCallback((html: string) => {
+    if (!html.trim()) return "";
+    const d = document.createElement("div");
+    d.innerHTML = html;
+    return d.innerText.replace(/\r\n/g, "\n");
+  }, []);
+
+  const editorHtmlForPlainText = useCallback(
+    (plain: string) => {
+      const stored = loadUnderlinesFromStorage();
+      if (stored.trim() && plainTextFromStoredHtml(stored) === plain) {
+        return stored;
+      }
+      if (stored.trim()) {
+        try {
+          localStorage.removeItem(underlineStorageKey);
+        } catch {
+          /* ignore */
+        }
+      }
+      return toSafeHtml(plain);
+    },
+    [
+      loadUnderlinesFromStorage,
+      plainTextFromStoredHtml,
+      toSafeHtml,
+      underlineStorageKey,
+    ],
+  );
+
+  const loadScriptPaths = useCallback(async () => {
+    try {
+      const r = await fetch(
+        `/api/work-dir?work=${encodeURIComponent(workApplied)}`,
+      );
+      if (!r.ok) return;
+      const j = (await r.json()) as {
+        work?: string;
+        absolute_path?: string;
+        guion_relative?: string;
+        guion_absolute?: string;
+        guion_exists?: boolean;
+      };
+      if (!j.absolute_path) return;
+      setScriptPaths({
+        work: j.work ?? workApplied,
+        absolute_path: j.absolute_path,
+        guion_relative: j.guion_relative ?? "guion.txt",
+        guion_absolute: j.guion_absolute ?? "",
+        guion_exists: !!j.guion_exists,
+      });
+    } catch {
+      setScriptPaths(null);
+    }
+  }, [workApplied]);
+
+  const openScriptEditor = useCallback(() => {
+    underlineHydratedRef.current = false;
+    setScriptEditorFullscreen(true);
+  }, []);
+
+  const scriptTextForExport = useCallback(() => {
+    if (scriptUnderlineMode && scriptUnderlineRef.current) {
+      return scriptUnderlineRef.current.innerText.replace(/\r\n/g, "\n");
+    }
+    if (scriptEditorFullscreen && scriptModalTextareaRef.current) {
+      return scriptModalTextareaRef.current.value;
+    }
+    return scriptText;
+  }, [scriptText, scriptUnderlineMode, scriptEditorFullscreen]);
+
+  const saveScriptToChosenFile = useCallback(async () => {
+    const text = scriptTextForExport().trim();
+    if (!text) return;
+    const result = await saveTextWithPicker(
+      text,
+      suggestedGuionFilename(workApplied, kw),
+    );
+    if (result === "cancelled") return;
+  }, [scriptTextForExport, workApplied, kw]);
+
   useEffect(() => {
     scriptTextRef.current = scriptText;
   }, [scriptText]);
@@ -380,7 +569,7 @@ export function ScriptWriterPanel({
 
   const fourActPreview = useMemo(() => {
     if (lib.swStructure !== "four_act") return null;
-    const totalMin = Number.isFinite(minutes) && minutes > 0 ? minutes : 20;
+    const totalMin = clampPipelineMinutes(minutes);
     let w: number[] | null = null;
     let descriptions: string[] = [];
     const presetId = lib.swNarrativePreset;
@@ -497,11 +686,50 @@ export function ScriptWriterPanel({
       text?: string;
       structured?: Record<string, unknown>;
     };
-    setScriptText(j.text ?? "");
+    const loaded = j.text ?? "";
+    setScriptText(loaded);
     setScriptDirty(false);
   }, [workApplied]);
 
+  const saveScriptToSession = useCallback(
+    async (opts?: { closeEditor?: boolean }) => {
+      setSavingScript(true);
+      try {
+        let textToSave = scriptText;
+        if (scriptUnderlineMode && scriptUnderlineRef.current) {
+          const html = scriptUnderlineRef.current.innerHTML;
+          setScriptAnnotatedHtml(html);
+          saveUnderlinesToStorage(html);
+          textToSave = scriptUnderlineRef.current.innerText.replace(/\r\n/g, "\n");
+          setScriptText(textToSave);
+        }
+        await putJson(`/api/script`, { work: workApplied, text: textToSave });
+        await loadScript({ force: true });
+        setManualEditMode(false);
+        await loadScriptPaths();
+        if (opts?.closeEditor) setScriptEditorFullscreen(false);
+      } finally {
+        setSavingScript(false);
+      }
+    },
+    [
+      scriptText,
+      scriptUnderlineMode,
+      workApplied,
+      loadScript,
+      saveUnderlinesToStorage,
+      loadScriptPaths,
+    ],
+  );
+
+  const prevScriptStepStateRef = useRef(scriptStepState);
   useEffect(() => {
+    const prev = prevScriptStepStateRef.current;
+    prevScriptStepStateRef.current = scriptStepState;
+    if (prev === "running" && scriptStepState === "done") {
+      void loadScript({ force: true });
+      return;
+    }
     void loadScript();
   }, [loadScript, scriptStepState, workApplied]);
 
@@ -513,20 +741,9 @@ export function ScriptWriterPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lib.scriptWriterTemplateId, lib.swSessionKeywords, lib.swSessionContext]);
 
-  const loadSavedGuiones = useCallback(async () => {
-    try {
-      const r = await fetch("/api/saved-guiones?limit=100");
-      if (!r.ok) return;
-      const j = (await r.json()) as { items?: SavedGuionEntry[] };
-      setSavedGuiones(Array.isArray(j.items) ? j.items : []);
-    } catch {
-      setSavedGuiones([]);
-    }
-  }, []);
-
   useEffect(() => {
-    void loadSavedGuiones();
-  }, [loadSavedGuiones]);
+    void loadScriptPaths();
+  }, [loadScriptPaths, scriptStepState, workApplied]);
 
   useEffect(() => {
     if (!scriptEditorFullscreen) {
@@ -534,13 +751,22 @@ export function ScriptWriterPanel({
       return;
     }
 
-    // Hydrate ONLY once per open. Never on keystrokes.
+    // Hydrate once per open from el guion visible (no HTML antiguo de localStorage).
     if (!underlineHydratedRef.current) {
       underlineHydratedRef.current = true;
-      const stored = loadUnderlinesFromStorage();
-      const initial = stored || toSafeHtml(scriptTextRef.current);
+      const current = scriptTextRef.current;
+      const initial = editorHtmlForPlainText(current);
       setScriptAnnotatedHtml(initial);
-      if (scriptUnderlineRef.current) scriptUnderlineRef.current.innerHTML = initial;
+      queueMicrotask(() => {
+        if (scriptUnderlineRef.current) {
+          scriptUnderlineRef.current.innerHTML = initial;
+        }
+        const ta = scriptModalTextareaRef.current;
+        if (ta && !scriptUnderlineMode) {
+          ta.value = current;
+          ta.focus();
+        }
+      });
     }
 
     const ta = scriptModalTextareaRef.current;
@@ -554,7 +780,13 @@ export function ScriptWriterPanel({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [scriptEditorFullscreen, loadUnderlinesFromStorage, scriptUnderlineMode, toSafeHtml]);
+  }, [
+    scriptEditorFullscreen,
+    loadUnderlinesFromStorage,
+    scriptUnderlineMode,
+    toSafeHtml,
+    editorHtmlForPlainText,
+  ]);
 
   useEffect(() => {
     if (!scriptEditorFullscreen) return;
@@ -568,40 +800,27 @@ export function ScriptWriterPanel({
     let cancelled = false;
     (async () => {
       try {
-        const [dRes, mRes] = await Promise.all([
-          fetch("/api/llm/defaults"),
-          fetch("/api/ollama/models"),
-        ]);
+        const dRes = await fetch("/api/llm/defaults");
         const d = (await dRes.json()) as LlmDefaultsResponse;
-        const mj = (await mRes.json()) as {
-          ok: boolean;
-          models?: { name: string }[];
-          error?: string;
-        };
         if (cancelled) return;
         setLlmDefaults(d);
-        const names =
-          mj.ok && mj.models?.length
-            ? mj.models.map((x) => x.name).filter(Boolean)
-            : [...FALLBACK_OLLAMA_MODELS];
-        setOllamaNames(names);
-        setOllamaListHint(
-          mj.ok ? null : (mj.error ?? "No se pudo conectar con Ollama"),
-        );
+        setOllamaNames([]);
+        setOllamaListHint(null);
         if (!defaultsAppliedRef.current) {
           defaultsAppliedRef.current = true;
+          setProvider("anthropic");
           setModel((prev) => {
             if (prev.trim()) return prev;
-            const p =
-              (d.llm_provider || "ollama").toLowerCase().trim() || "ollama";
-            if (p === "openai") return d.openai_model || "";
-            return d.ollama_model || "";
+            return (
+              d.creative_model?.trim() ||
+              d.anthropic_model?.trim() ||
+              "claude-sonnet-4-5"
+            );
           });
         }
       } catch {
         if (!cancelled) {
-          setOllamaNames([...FALLBACK_OLLAMA_MODELS]);
-          setOllamaListHint("Error de red al cargar modelos");
+          setOllamaListHint(null);
         }
       }
     })();
@@ -610,16 +829,10 @@ export function ScriptWriterPanel({
     };
   }, [setModel]);
 
-  const useOpenAiModelField = provider === "openai";
-
-  const ollamaSelectOptions = useMemo(() => {
-    const sorted = [...ollamaNames].sort((a, b) => a.localeCompare(b));
-    if (model.trim() && !sorted.includes(model)) {
-      sorted.push(model);
-      sorted.sort((a, b) => a.localeCompare(b));
-    }
-    return sorted;
-  }, [ollamaNames, model]);
+  const creativeModelPlaceholder =
+    llmDefaults?.creative_model?.trim() ||
+    llmDefaults?.anthropic_model?.trim() ||
+    "claude-sonnet-4-5";
 
   /** Solo durante la inferencia del LLM: no guardar (condición de carrera). Con paso «done» sí puedes editar el texto. */
   const scriptIoLocked = scriptStepState === "running";
@@ -653,17 +866,52 @@ export function ScriptWriterPanel({
 
   const lockReason = scriptStepState === "running" ? "Generando guion con el LLM…" : null;
   return (
-    <div className={`rounded-2xl bg-slate-900 p-4 space-y-3 ${locked ? "opacity-95" : ""}`}>
+    <div className={`space-y-4 ${locked ? "opacity-90" : ""}`}>
 
       {/* ── Avisos ── */}
       {lockReason && (
-        <div className="rounded-xl border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-900">
           <span className="font-semibold">Generando.</span> {lockReason} Espera a que termine antes de guardar el guion.
           Para cambiar plantilla o regenerar desde cero usa <strong>Reset</strong> en la pipeline.
         </div>
       )}
+
+      {locked && !scriptIoLocked ? (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] text-emerald-900">
+          Guion <strong>confirmado</strong> ({scriptOnDisk.source ?? "guion.txt"},{" "}
+          {scriptOnDisk.chars.toLocaleString()} caracteres). El paso está en <em>done</em>.
+        </div>
+      ) : scriptOnDisk.exists && scriptStepState !== "done" ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
+          Hay guion en <strong>{scriptOnDisk.source}</strong> pero el paso está en <strong>idle</strong>.
+          Confírmalo para marcar <em>done</em> sin volver a ejecutar Start step.
+        </div>
+      ) : !scriptOnDisk.exists ? (
+        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[12px] text-slate-600">
+          Aún no hay guion en disco. Usa Start step, pega texto y guarda, o confirma tras generar.
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap gap-2">
+        <Btn
+          type="button"
+          className="bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40"
+          disabled={locked || scriptIoLocked || !scriptOnDisk.exists}
+          onClick={() => void handleConfirmScript()}
+        >
+          Confirmar guion (bloquear)
+        </Btn>
+        <Btn
+          type="button"
+          className="border border-slate-200 bg-slate-50 text-slate-700"
+          onClick={() => void loadScriptMeta()}
+        >
+          Recargar estado
+        </Btn>
+      </div>
+
       {locked && !scriptIoLocked && (
-        <div className="rounded-xl border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-900">
           <span className="font-semibold">Bloqueado.</span> Paso Script Writer ya ejecutado. Puedes{" "}
           <strong>editar y guardar</strong> el texto del guion abajo; para regenerar usa{" "}
           <strong>Reset</strong> en la pipeline (arriba).
@@ -677,7 +925,7 @@ export function ScriptWriterPanel({
               Editar plantilla (desbloquear)
             </Btn>
             {manualEditMode && (
-              <span className="text-[11px] text-amber-200">
+              <span className="text-[11px] text-amber-700">
                 Modo edición activo: al guardar el guion se volverá a bloquear.
               </span>
             )}
@@ -685,12 +933,14 @@ export function ScriptWriterPanel({
         </div>
       )}
 
+      <TranscriptsSessionBanner workApplied={workApplied} />
+
       <fieldset disabled={effectiveLocked} className="min-w-0 space-y-3 border-0 p-0">
 
         {/* ── Template selector ── */}
-        <div className="flex flex-wrap items-end justify-between gap-2 rounded-xl border border-slate-600 bg-gradient-to-r from-slate-800 to-slate-700 px-4 py-3 shadow-md">
-          <div className="min-w-[260px] flex-1">
-            <label className="mb-1 block text-[10px] font-semibold uppercase tracking-widest text-slate-400">
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-200 bg-slate-50 px-4 py-3.5">
+            <label className="mb-1 block text-[10px] font-semibold uppercase tracking-widest text-slate-500">
               Template Script Writer
             </label>
             <select
@@ -701,7 +951,7 @@ export function ScriptWriterPanel({
                 if (!id) return;
                 await lib.applyTemplateFromApi(id);
               }}
-              className="w-full rounded-lg border border-slate-600 bg-slate-900 px-2.5 py-1.5 text-sm text-slate-200 focus:border-slate-400 focus:outline-none"
+              className="w-full rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-900 focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-100"
             >
               <option value="">(nuevo template)</option>
               {lib.scriptWriterTemplates.map((t) => (
@@ -709,16 +959,30 @@ export function ScriptWriterPanel({
               ))}
             </select>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <Btn type="button" className="border border-slate-500 bg-slate-700 text-slate-200 hover:bg-slate-600"
-              onClick={() => run("Recargar templates SW", async () => { await lib.loadScriptWriterTemplates(); })}>
-              Reload
+          <div className="flex flex-wrap gap-2 px-4 py-4 sm:px-5">
+            <Btn
+              type="button"
+              className="border border-slate-200 bg-slate-100 text-slate-900 hover:bg-slate-200"
+              onClick={() =>
+                run("Reiniciar fragmentación y reiniciar creación", async () => {
+                  if (!confirm("¿Borrar estado de fragmentación y reiniciar la creación del guion?")) return;
+                  await postJson("/api/script-fragmentation/reset", { work: workApplied });
+                  setScriptFragmentIndex(null);
+                  setScriptText("");
+                  setScriptDirty(false);
+                  setManualEditMode(false);
+                  await loadFragState();
+                  await refreshPipeline();
+                })
+              }
+            >
+              Reiniciar
             </Btn>
-            <Btn type="button" className="bg-white text-slate-900 hover:bg-slate-100" disabled={!lib.swName.trim()}
+            <Btn type="button" className="bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50" disabled={!lib.swName.trim()}
               onClick={() => run("Guardar template Script Writer", async () => { await lib.saveTemplate(); })}>
               Save
             </Btn>
-            <Btn type="button" className="border border-rose-500/50 bg-rose-950/40 text-rose-400 hover:bg-rose-950/70 disabled:opacity-40"
+            <Btn type="button" className="border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 disabled:opacity-40"
               disabled={!lib.scriptWriterTemplateId}
               onClick={() => run("Eliminar template Script Writer", async () => {
                 if (!lib.scriptWriterTemplateId) return;
@@ -730,17 +994,83 @@ export function ScriptWriterPanel({
           </div>
         </div>
 
-        {/* ── Generador IA: solo en modo nuevo template ── */}
+        {/* ── Generador IA / Manual: nuevo template ── */}
         {!lib.scriptWriterTemplateId && !effectiveLocked && (
-          <AIScriptWriterGenerator
-            onGenerated={(data) => {
-              lib.applyTemplateFields(data as Parameters<typeof lib.applyTemplateFields>[0]);
-            }}
-          />
+          <> 
+            {scriptWriterMode === "choose" ? (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 shadow-sm">
+                <div className="mb-4 text-sm font-semibold uppercase tracking-wide text-slate-900">
+                  CREAR NUEVO TEMPLATE
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={() => setScriptWriterMode("ia")}
+                    className="flex flex-col items-start rounded-2xl border border-violet-200 bg-violet-50 p-4 text-left transition hover:border-violet-300 hover:bg-violet-100"
+                  >
+                    <span className="text-sm font-semibold text-slate-900">Generador con IA</span>
+                    <p className="mt-2 text-sm text-slate-600">
+                      Carga transcripts y deja que la IA rellene automáticamente los campos del template.
+                    </p>
+                    <span className="mt-3 inline-flex items-center rounded-full bg-violet-100 px-2.5 py-1 text-[11px] font-medium text-violet-700">
+                      Recomendado
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setScriptWriterMode("manual")}
+                    className="flex flex-col items-start rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:border-slate-300 hover:bg-slate-50"
+                  >
+                    <span className="text-sm font-semibold text-slate-900">Manual</span>
+                    <p className="mt-2 text-sm text-slate-600">
+                      Rellena manualmente los campos del template y ajusta el guion desde cero.
+                    </p>
+                    <span className="mt-3 inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-700">
+                      Modo manual
+                    </span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+                  <div>
+                    <div className="text-sm font-semibold uppercase tracking-wide text-slate-900">
+                      {scriptWriterMode === "ia" ? "GENERADOR DE TEMPLATE CON IA" : "TEMPLATE MANUAL"}
+                    </div>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {scriptWriterMode === "ia"
+                        ? "Carga los transcripts y deja que la IA rellene los apartados. Después podrás revisar y editar antes del Start step."
+                        : "Rellena los campos a mano. Puedes volver a las opciones de creación en cualquier momento."}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setScriptWriterMode("choose")}
+                    className="text-sm font-medium text-slate-700 hover:text-slate-900"
+                  >
+                    Volver a opciones
+                  </button>
+                </div>
+                {scriptWriterMode === "ia" && (
+                  <AIScriptWriterGenerator
+                    provider="anthropic"
+                    model={model}
+                    workApplied={workApplied}
+                    lang={lang}
+                    onGenerated={async (data) => {
+                      lib.applyTemplateFields(data as Parameters<typeof lib.applyTemplateFields>[0]);
+                      await lib.saveTemplate();
+                    }}
+                  />
+                )}
+              </div>
+            )}
+          </>
         )}
 
         {/* ── Template settings ── */}
-        <Section id="sw-template" title="Configuración Del Template" description="Nombre, ritmo, densidad narrativa y estructura de actos del guion.">
+        <Section id="sw-template" title="CONFIGURACIÓN DEL TEMPLATE" description="Nombre, ritmo, densidad narrativa y estructura de actos del guion." theme="light">
           <div className="space-y-3">
             <div>
               <Label>Nombre</Label>
@@ -748,7 +1078,19 @@ export function ScriptWriterPanel({
             </div>
             <div className="grid gap-3 md:grid-cols-3">
               <div>
-                <Label>Ritmo (VO)</Label>
+                <div className="flex items-start gap-2">
+                  <Label>Ritmo (VO)</Label>
+                  <span className="group relative inline-flex items-start">
+                    <span
+                      className="relative -top-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full border border-slate-300 bg-slate-100 text-[9px] font-semibold text-slate-600"
+                      aria-label="Información sobre cómo influye el ritmo en el guion"
+                      role="button"
+                    >i</span>
+                    <span className="pointer-events-none absolute left-0 top-full z-20 hidden w-[18rem] rounded-md border border-slate-300 bg-slate-900 px-3 py-2 text-[10px] leading-5 text-slate-100 shadow-lg opacity-0 transition-opacity duration-150 group-hover:block group-hover:opacity-100">
+                      Ajusta la velocidad y estilo de voz del guion: corto hace el texto más directo y rápido, largo lo convierte en una narración más pausada y detallada.
+                    </span>
+                  </span>
+                </div>
                 <Select value={lib.swPacing} onChange={(e) => lib.setSwPacing(e.target.value as typeof lib.swPacing)}>
                   <option value="">(sin override: hereda de Prompt)</option>
                   <option value="short">Corto / rápido</option>
@@ -757,7 +1099,19 @@ export function ScriptWriterPanel({
                 </Select>
               </div>
               <div>
-                <Label>Densidad de datos</Label>
+                <div className="flex items-start gap-2">
+                  <Label>Densidad de datos</Label>
+                  <span className="group relative inline-flex items-start">
+                    <span
+                      className="relative -top-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full border border-slate-300 bg-slate-100 text-[9px] font-semibold text-slate-600"
+                      aria-label="Información sobre cómo influye la densidad de datos en el guion"
+                      role="button"
+                    >i</span>
+                    <span className="pointer-events-none absolute left-0 top-full z-20 hidden w-[18rem] rounded-md border border-slate-300 bg-slate-900 px-3 py-2 text-[10px] leading-5 text-slate-100 shadow-lg opacity-0 transition-opacity duration-150 group-hover:block group-hover:opacity-100">
+                      Controla cuánta información incluye el guion: baja prioriza historia y metáforas, alta incluye más cifras, datos y detalles técnicos.
+                    </span>
+                  </span>
+                </div>
                 <Select value={lib.swDataDensity} onChange={(e) => lib.setSwDataDensity(e.target.value as typeof lib.swDataDensity)}>
                   <option value="">(por defecto)</option>
                   <option value="low">Baja (historia / metáfora)</option>
@@ -778,76 +1132,66 @@ export function ScriptWriterPanel({
                 </Select>
               </div>
             </div>
-
-            {lib.swStructure === "four_act" && (
-              <div className="rounded-xl border border-slate-600 bg-slate-700/50 px-3 py-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-300">Reparto orientativo (4 actos)</div>
-                <div className="mt-3 grid gap-3 lg:grid-cols-3">
-                  <div>
-                    <Label>Categoría narrativa</Label>
-                    <Select value={lib.swNarrativePreset} onChange={(e) => {
-                      const v = e.target.value as ScriptWriterNarrativePreset;
-                      if (v === "") { lib.setSwNarrativePreset(""); lib.setSwFragmentWeights(""); return; }
-                      if (v === "custom") { lib.setSwNarrativePreset("custom"); return; }
-                      const p = narrativePresets.find((x) => x.id === v);
-                      lib.setSwNarrativePreset(v);
-                      if (p?.weights?.length === 4) lib.setSwFragmentWeights(p.weights.join(", "));
-                    }}>
-                      <option value="">Seleccione categoría</option>
-                      {narrativePresets.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
-                      <option value="custom">Personalizado (editar pesos en fragmentación)</option>
-                    </Select>
-                  </div>
-                  <div className="lg:col-span-2 overflow-x-auto">
-                    {fourActPreview && fourActPreview.length === 4 && (
-                      <table className="w-full min-w-[340px] border-collapse text-left text-[11px]">
-                        <thead>
-                          <tr className="border-b border-slate-600 text-slate-400">
-                            <th className="py-1 pr-2 font-medium">Acto</th>
-                            <th className="py-1 pr-2 font-medium">Segmento</th>
-                            <th className="py-1 pr-2 font-medium">Peso</th>
-                            <th className="py-1 pr-2 font-medium">Min</th>
-                            <th className="py-1 font-medium">Palabras</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {fourActPreview.map((row, i) => (
-                            <tr key={i} className="border-b border-slate-700 text-slate-300">
-                              <td className="py-1 pr-2 font-mono text-slate-400">{["I", "II", "III", "IV"][i]}</td>
-                              <td className="py-1 pr-2">{row.label}</td>
-                              <td className="py-1 pr-2 font-mono">{row.pct.toFixed(0)}%</td>
-                              <td className="py-1 pr-2 font-mono">{row.min.toFixed(1)}</td>
-                              <td className="py-1 font-mono">~{row.words}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    )}
-                    <p className="mt-2 text-[10px] text-slate-500">Duración del pipeline: {Number.isFinite(minutes) && minutes > 0 ? minutes : 20} min.</p>
-                  </div>
+            
+            {lib.swStructure === "four_act" && fourActPreview && (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-sm font-semibold text-slate-900">Vista previa de 4 actos</div>
+                  <p className="text-xs text-slate-500">
+                    Duración del pipeline: {clampPipelineMinutes(minutes)} min (objetivo{" "}
+                    {PIPELINE_TARGET_MIN_MINUTES}–{PIPELINE_TARGET_MAX_MINUTES}).
+                  </p>
+                </div>
+                <div className="mt-3 overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr>
+                        <th className="pb-2 text-left font-semibold text-slate-700">Acto</th>
+                        <th className="pb-2 text-left font-semibold text-slate-700">Descripción</th>
+                        <th className="pb-2 text-left font-semibold text-slate-700">%</th>
+                        <th className="pb-2 text-left font-semibold text-slate-700">Min</th>
+                        <th className="pb-2 text-left font-semibold text-slate-700">Palabras</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {fourActPreview.map((row, i) => (
+                        <tr key={i} className="border-t border-slate-200 text-slate-700">
+                          <td className="py-2 pr-3 font-mono text-slate-500">{["I", "II", "III", "IV"][i]}</td>
+                          <td className="py-2 pr-3">{row.label}</td>
+                          <td className="py-2 pr-3 font-mono">{row.pct.toFixed(0)}%</td>
+                          <td className="py-2 pr-3 font-mono">{row.min.toFixed(1)}</td>
+                          <td className="py-2 font-mono">~{row.words}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             )}
 
             <div>
-              <Label>Instrucciones sistema (overlay)</Label>
-              <ExpandableTextArea
-                value={lib.swSystem}
-                onChange={lib.setSwSystem}
-                placeholder="Reglas extra para la generación del guion (se añaden al system del LLM tras el template de Prompt)."
-                modalTitle="Script Writer · Instrucciones sistema (overlay)"
-                variant="output"
-              />
+              <Label>Texto extra → system (prompt interno)</Label>
+              <InferredFieldShell showSectionLabel>
+                <ExpandableTextArea
+                  value={lib.swSystem}
+                  onChange={lib.setSwSystem}
+                  placeholder="Reglas extra para la generación del guion (se añaden al system del LLM tras el template de Prompt)."
+                  modalTitle="Script Writer · Texto extra → system (prompt interno)"
+                  variant="inferred"
+                />
+              </InferredFieldShell>
             </div>
             <div>
-              <Label>Instrucciones usuario (overlay)</Label>
-              <ExpandableTextArea
-                value={lib.swUser}
-                onChange={lib.setSwUser}
-                placeholder="Preferencias de formato, ejemplos a evitar, compliance…"
-                modalTitle="Script Writer · Instrucciones usuario (overlay)"
-                variant="output"
-              />
+              <Label>Texto extra → user (prompt interno)</Label>
+              <InferredFieldShell showSectionLabel>
+                <ExpandableTextArea
+                  value={lib.swUser}
+                  onChange={lib.setSwUser}
+                  placeholder="Preferencias de formato, ejemplos a evitar, compliance…"
+                  modalTitle="Script Writer · Texto extra → user (prompt interno)"
+                  variant="inferred"
+                />
+              </InferredFieldShell>
             </div>
 
             {/* ── Inputs de sesión (para generación) ── */}
@@ -865,35 +1209,37 @@ export function ScriptWriterPanel({
                 />
               </div>
               <div className="sm:col-span-2">
-                <ExpandableTextArea
-                  label="Contexto"
-                  value={ctx}
-                  onChange={(v) => {
-                    setCtx(v);
-                    lib.setSwSessionContext(v);
-                  }}
-                  placeholder="Público, tono, datos que deben aparecer…"
-                  modalTitle="Contexto del Script Writer"
-                  variant="output"
-                />
+                <InferredFieldShell showSectionLabel={false} className="p-0">
+                  <ExpandableTextArea
+                    label="Contexto"
+                    value={ctx}
+                    onChange={(v) => {
+                      setCtx(v);
+                      lib.setSwSessionContext(v);
+                    }}
+                    placeholder="Público, tono, datos que deben aparecer…"
+                    modalTitle="Contexto del Script Writer"
+                    variant="inferred"
+                  />
+                </InferredFieldShell>
               </div>
             </div>
           </div>
         </Section>
 
         {/* ── Sesión + Fragmentación (switch) ── */}
-        <div className={`overflow-hidden rounded-xl border transition-all ${sessionEnabled ? "border-slate-700 shadow-md" : "border-slate-600 hover:border-slate-500"}`}>
-          <div className="flex w-full items-start justify-between gap-3 bg-gradient-to-r from-slate-800 to-slate-700 px-4 py-3 text-left">
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex w-full items-start justify-between gap-3 bg-slate-50 px-4 py-3 text-left">
             <div className="flex min-w-0 flex-1 flex-col gap-y-0.5">
               <div className="flex items-center gap-2">
-                <span className="shrink-0 text-sm font-semibold tracking-wider capitalize text-white">
-                  Sesión de ejecución y fragmentación
+                <span className="shrink-0 text-sm font-semibold tracking-wider uppercase text-slate-900">
+                  SESIÓN DE EJECUCIÓN Y FRAGMENTACIÓN
                 </span>
-                <span className="shrink-0 rounded bg-slate-600 px-1.5 py-0.5 text-[10px] text-slate-300 font-mono">
+                <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600 font-mono">
                   opcional
                 </span>
               </div>
-              <span className="text-[11px] leading-snug text-slate-400 font-normal">
+              <span className="text-[11px] leading-snug text-slate-500 font-normal">
                 Overrides para esta ejecución (idioma, minutos, proveedor/modelo) y cómo se divide el guion en fragmentos.
               </span>
             </div>
@@ -925,24 +1271,23 @@ export function ScriptWriterPanel({
           </div>
 
           {sessionEnabled && (
-            <div className={[
-              "border-t border-slate-700 bg-slate-800 px-4 pb-4 pt-3 space-y-4",
-              "[&_label]:text-slate-400",
-              "[&_input]:mt-1 [&_input]:bg-slate-700 [&_input]:border-slate-600 [&_input]:text-slate-200 [&_input]:placeholder:text-slate-500",
-              "[&_input:focus]:bg-slate-700 [&_input:focus]:text-slate-100 [&_input:focus]:border-slate-400 [&_input:focus]:ring-slate-500/30",
-              "[&_select]:mt-1 [&_select]:bg-slate-700 [&_select]:border-slate-600 [&_select]:text-slate-200",
-              "[&_select:focus]:bg-slate-700 [&_select:focus]:text-slate-100 [&_select:focus]:border-slate-400",
-              "[&_textarea]:bg-slate-700 [&_textarea]:border-slate-600 [&_textarea]:text-slate-200 [&_textarea]:placeholder:text-slate-500",
-              "[&_textarea:focus]:bg-slate-700 [&_textarea:focus]:text-slate-100 [&_textarea:focus]:border-slate-400",
-            ].join(" ")}>
+            <div className="border-t border-slate-200 bg-slate-50 px-4 pb-4 pt-3 space-y-4">
               {/* Ejecución */}
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
                   <Label>Idioma</Label>
-                  <Select value={lang} onChange={(e) => setLang(e.target.value)}>
+                  <Select
+                    value={lang}
+                    disabled
+                    className="cursor-not-allowed bg-slate-100 text-slate-700"
+                    onChange={() => {}}
+                  >
                     <option value="es">es</option>
                     <option value="en">en</option>
                   </Select>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Lo fija <strong>Topic Generator → Idioma de salida</strong> ({lang === "en" ? "English" : "Español"}).
+                  </p>
                 </div>
                 <div>
                   <Label>Duración orientativa (min)</Label>
@@ -950,31 +1295,28 @@ export function ScriptWriterPanel({
                 </div>
                 <div>
                   <Label>Proveedor LLM</Label>
-                  <Select value={provider} onChange={(e) => setProvider(e.target.value)}>
-                    <option value="">(usar .env)</option>
-                    <option value="ollama">ollama</option>
-                    <option value="openai">openai-compatible</option>
-                  </Select>
+                  <Input
+                    value="Anthropic (Claude)"
+                    readOnly
+                    className="bg-slate-100 text-slate-700"
+                  />
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Topic Generator, Prompt y Script Writer usan Anthropic. Metadata y routers usan OpenAI.
+                  </p>
                 </div>
                 <div>
-                  <Label>Modelo</Label>
-                  {useOpenAiModelField ? (
-                    <Input value={model} onChange={(e) => setModel(e.target.value)} placeholder={llmDefaults?.openai_model?.trim() || "gpt-4o-mini"} />
-                  ) : (
-                    <>
-                      <Select value={model} onChange={(e) => setModel(e.target.value)}>
-                        <option value="">Predeterminado (.env)</option>
-                        {ollamaSelectOptions.map((name) => (<option key={name} value={name}>{name}</option>))}
-                      </Select>
-                      {ollamaListHint && <p className="mt-1 text-[11px] text-amber-400">{ollamaListHint}</p>}
-                    </>
-                  )}
+                  <Label>Modelo Claude</Label>
+                  <Input
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    placeholder={creativeModelPlaceholder}
+                  />
                 </div>
               </div>
 
               {/* Fragmentación */}
               <div className="space-y-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-300">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                   Fragmentación
                 </div>
                 <div className="max-w-xl">
@@ -985,13 +1327,13 @@ export function ScriptWriterPanel({
                     <option value="outline_act1_only">Solo OUTLINE + primer bloque</option>
                     <option value="sequential_fragments">{structureSequentialCopy.optionLabel}</option>
                   </Select>
-                  {lib.swChunking === "sequential_fragments" && <p className="mt-1 text-[11px] text-slate-400">{structureSequentialCopy.helperSequential}</p>}
+                  {lib.swChunking === "sequential_fragments" && <p className="mt-1 text-[11px] text-slate-500">{structureSequentialCopy.helperSequential}</p>}
                 </div>
 
                 {lib.swChunking === "sequential_fragments" && (
-                  <div className="rounded-xl border border-slate-600 bg-slate-700/40 px-3 py-3 space-y-3">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-300">Progreso por fragmentos</div>
-                    <p className="text-[11px] text-slate-400">{structureSequentialCopy.weightsIntro}</p>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 space-y-3">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Progreso por fragmentos</div>
+                    <p className="text-[11px] text-slate-500">{structureSequentialCopy.weightsIntro}</p>
                     <div>
                       <Label>Pesos de minutos por fragmento (opcional)</Label>
                       <TextArea value={lib.swFragmentWeights} onChange={(e) => { lib.setSwFragmentWeights(e.target.value); if (lib.swStructure === "four_act") lib.setSwNarrativePreset("custom"); }}
@@ -1009,12 +1351,15 @@ export function ScriptWriterPanel({
                           ))}
                         </Select>
                       </div>
-                      <Btn type="button" className="border border-slate-500 bg-slate-700 text-slate-200 hover:bg-slate-600" onClick={() => void loadFragState()}>Refrescar</Btn>
-                      <Btn type="button" className="border border-rose-500/50 bg-rose-950/40 text-rose-400 hover:bg-rose-950/70"
+                      <Btn type="button" className="border border-slate-200 bg-slate-100 text-slate-900 hover:bg-slate-200" onClick={() => void loadFragState()}>Refrescar</Btn>
+                      <Btn type="button" className="border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
                         onClick={() => run("Reiniciar fragmentación", async () => {
                           if (!confirm("¿Borrar estado y chunks guardados?")) return;
                           await postJson(`/api/script-fragmentation/reset`, { work: workApplied });
                           setScriptFragmentIndex(null);
+                          setScriptText("");
+                          setScriptDirty(false);
+                          setManualEditMode(false);
                           await loadFragState();
                           await refreshPipeline();
                         })}>
@@ -1024,13 +1369,13 @@ export function ScriptWriterPanel({
                     {!fragExists ? (
                       <p className="text-[11px] text-slate-500">Sin estado en disco aún. Aparecerá tras el primer Start step.</p>
                     ) : (
-                      <ul className="space-y-2 border-t border-slate-600 pt-3">
+                      <ul className="space-y-2 border-t border-slate-200 pt-3">
                         {fragSteps.map((s, i) => (
                           <li key={`${s.id}-${i}`} className="flex flex-wrap items-center gap-2">
                             <span className="w-6 font-mono text-[11px] text-slate-400">{i}</span>
-                            <span className="min-w-[120px] flex-1 text-slate-200 font-medium">{s.label}</span>
-                            <span className="rounded-full border border-slate-600 bg-slate-700 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">{s.status}</span>
-                            <label className="flex cursor-pointer items-center gap-1 text-[11px] text-slate-300">
+                            <span className="min-w-[120px] flex-1 text-slate-900 font-medium">{s.label}</span>
+                            <span className="rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-500">{s.status}</span>
+                            <label className="flex cursor-pointer items-center gap-1 text-[11px] text-slate-700">
                               <input type="checkbox" className="rounded border-slate-500" checked={s.status === "done"} disabled={effectiveLocked}
                                 onChange={(e) => run(s.status === "done" ? "Marcar pendiente" : "Marcar completado", async () => {
                                   await patchJson(`/api/script-fragmentation`, { work: workApplied, index: i, complete: e.target.checked });
@@ -1050,114 +1395,92 @@ export function ScriptWriterPanel({
           )}
         </div>
 
-        {/* ── Biblioteca de guiones ── */}
-        <Section id="sw-library" title="Biblioteca De Guiones" description="Archiva, importa o aplica copias de guiones guardadas en disco.">
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-end gap-2">
-              <div className="min-w-[12rem] flex-1">
-                <Label>Título al archivar (opcional)</Label>
-                <Input value={saveToLibTitle} onChange={(e) => setSaveToLibTitle(e.target.value)} placeholder="p. ej. Motivación v2" />
-              </div>
-              <Btn type="button" className="border border-slate-500 bg-slate-700 text-slate-200 hover:bg-slate-600"
-                onClick={() => run("Archivar guion de sesión", async () => {
-                  await postJson("/api/saved-guiones", { work: workApplied, title: saveToLibTitle.trim() || null });
-                  await loadSavedGuiones();
-                })}>
-                Archivar sesión
-              </Btn>
-              <Btn type="button" className="border border-slate-500 bg-slate-700 text-slate-200 hover:bg-slate-600"
-                onClick={() => run("Archivar texto del editor", async () => {
-                  await postJson("/api/saved-guiones/raw", { text: scriptText, title: saveToLibTitle.trim() || null });
-                  await loadSavedGuiones();
-                })}>
-                Archivar editor
-              </Btn>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <input ref={fileImportRef} type="file" accept=".txt,.md,text/plain,text/markdown" className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0]; e.target.value = "";
-                  if (!f) return;
-                  void run("Subir guion a biblioteca", async () => {
-                    const fd = new FormData();
-                    fd.append("file", f); fd.append("title", saveToLibTitle.trim());
-                    const r = await fetch("/api/saved-guiones/upload", { method: "POST", body: fd });
-                    if (!r.ok) throw new Error((await readApiError(r)) || r.statusText);
-                    await loadSavedGuiones();
-                  });
-                }} />
-              <Btn type="button" className="bg-white text-slate-900 hover:bg-slate-100" onClick={() => fileImportRef.current?.click()}>
-                Subir archivo
-              </Btn>
-            </div>
-            <div className="flex flex-wrap items-end gap-2">
-              <div className="min-w-[14rem] flex-1">
-                <Label>Seleccionar copia guardada</Label>
-                <Select value={selectedSavedId} onChange={(e) => setSelectedSavedId(e.target.value)}>
-                  <option value="">— Elegir —</option>
-                  {savedGuiones.map((s) => (<option key={s.id} value={s.id}>{s.title} · {(s.byte_len / 1024).toFixed(1)} KiB</option>))}
-                </Select>
-              </div>
-              <Btn type="button" className="bg-white text-slate-900 hover:bg-slate-100 disabled:opacity-40" disabled={!selectedSavedId}
-                onClick={() => run("Usar guion de biblioteca", async () => {
-                  await postJson(`/api/saved-guiones/${encodeURIComponent(selectedSavedId)}/apply`, { work: workApplied });
-                  await loadScript({ force: true }); await refreshPipeline();
-                })}>
-                Usar en sesión
-              </Btn>
-              <Btn type="button" className="border border-rose-500/50 bg-rose-950/40 text-rose-400 hover:bg-rose-950/70 disabled:opacity-40" disabled={!selectedSavedId}
-                onClick={() => run("Eliminar copia", async () => {
-                  await deleteReq(`/api/saved-guiones/${encodeURIComponent(selectedSavedId)}`);
-                  setSelectedSavedId(""); await loadSavedGuiones();
-                })}>
-                Borrar copia
-              </Btn>
-            </div>
-            <div className="flex flex-wrap gap-2 border-t border-slate-600 pt-2">
-              <Btn type="button" className="bg-emerald-600 text-white hover:bg-emerald-700"
-                onClick={() => run("Aplicar editor a sesión", async () => {
-                  await postJson("/api/saved-guiones/apply-text", { work: workApplied, text: scriptText });
-                  await loadScript({ force: true }); await refreshPipeline();
-                })}>
-                Aplicar texto del editor a la sesión
-              </Btn>
-            </div>
-          </div>
-        </Section>
-
       </fieldset>
 
       {/* ── Guion ── */}
-      <div className="space-y-2">
+      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm p-4 space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="text-sm font-semibold tracking-wider capitalize text-white">Salida · Guion</div>
-          <div className="flex gap-2">
-            <Btn type="button" className="border border-slate-600 bg-slate-800 text-slate-200 hover:bg-slate-700" onClick={() => void loadScript()}>
+          <div>
+            <div className="text-sm font-semibold tracking-wider capitalize text-slate-900">Salida · Guion</div>
+            <p className="mt-0.5 text-[11px] text-slate-500">
+              Texto de <code className="rounded bg-slate-100 px-1">guion.txt</code> en esta sesión. No es el preview del paso Prompt (ahí solo ves instrucciones al LLM).
+              {lib.swChunking === "sequential_fragments"
+                ? " Con fragmentación, aquí va el guion ensamblado (outline + fragmentos completados), no solo el último fragmento."
+                : null}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Btn
+              type="button"
+              className="border border-slate-200 bg-slate-900 text-white hover:bg-slate-800"
+              disabled={scriptIoLocked || !scriptTextForExport().trim()}
+              onClick={() =>
+                run("Guardar en…", async () => {
+                  await saveScriptToChosenFile();
+                })
+              }
+            >
+              Guardar en…
+            </Btn>
+            <Btn
+              type="button"
+              className="border border-slate-200 bg-white text-slate-800 hover:bg-slate-50"
+              disabled={scriptIoLocked || savingScript || !scriptText.trim()}
+              onClick={() =>
+                run("Guardar en sesión", async () => {
+                  await saveScriptToSession();
+                })
+              }
+            >
+              {savingScript ? "Guardando…" : "Guardar en sesión"}
+            </Btn>
+            <Btn
+              type="button"
+              className="border border-slate-200 bg-slate-100 text-slate-900 hover:bg-slate-200"
+              onClick={() => void loadScript({ force: true })}
+            >
               Recargar desde disco
+            </Btn>
+            <Btn
+              type="button"
+              className="border border-slate-200 bg-white text-slate-800 hover:bg-slate-50"
+              onClick={() =>
+                run("Abrir carpeta de sesión", async () => {
+                  await postJson("/api/work-dir/reveal", {
+                    work: workApplied,
+                    highlight: "guion.txt",
+                  });
+                })
+              }
+            >
+              Abrir carpeta
             </Btn>
           </div>
         </div>
+        {scriptPaths ? (
+          <p className="text-[11px] text-slate-500">
+            <span className="font-medium text-slate-600">Ruta:</span>{" "}
+            <code className="break-all rounded bg-slate-100 px-1 text-slate-700">
+              {scriptPaths.guion_absolute || `${scriptPaths.absolute_path}/${scriptPaths.guion_relative}`}
+            </code>
+            {!scriptPaths.guion_exists ? (
+              <span className="ml-1 text-amber-700"> (aún no existe en disco)</span>
+            ) : null}
+          </p>
+        ) : null}
         <div role="button" tabIndex={0} aria-label="Abrir editor de guion a pantalla completa"
-          onClick={() => setScriptEditorFullscreen(true)}
-          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setScriptEditorFullscreen(true); } }}
-          className={`min-h-[200px] w-full cursor-pointer rounded-xl border border-slate-600 bg-slate-800 px-3 py-2 text-left font-mono text-xs leading-relaxed shadow-inner outline-none transition hover:border-slate-500 ${scriptText.trim() ? "text-slate-200" : "text-slate-500"}`}>
+          onClick={openScriptEditor}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openScriptEditor(); } }}
+          className={`min-h-[200px] w-full cursor-pointer rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-left font-mono text-xs leading-relaxed shadow-sm outline-none transition hover:border-slate-300 ${scriptText.trim() ? "text-slate-900" : "text-slate-500"}`}>
           <span className="block max-h-[280px] overflow-y-auto whitespace-pre-wrap">
             {scriptText.trim() ? scriptText : "Tras Start step aparecerá el guion aquí. Pulsa para abrir el editor completo."}
           </span>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Btn className="bg-white text-slate-900 hover:bg-slate-100" disabled={scriptIoLocked}
-            onClick={() => run("Guardar guion", async () => {
-              await putJson(`/api/script`, { work: workApplied, text: scriptText });
-              await loadScript({ force: true });
-              setManualEditMode(false);
-            })}>
-            Guardar en sesión
-          </Btn>
-          <span className="self-center text-[11px] text-slate-500">
-            Guarda en <code className="rounded bg-slate-700 px-1">guion.txt</code> y sincroniza <code className="rounded bg-slate-700 px-1">pipeline/script.json</code>.
-          </span>
-        </div>
+        <p className="text-[11px] text-slate-500">
+          <strong>Guardar en…</strong> abre el diálogo del sistema para elegir carpeta y nombre del archivo.
+          <strong> Guardar en sesión</strong> actualiza <code className="rounded bg-slate-100 px-1">guion.txt</code> del
+          proyecto (necesario para Hook Router, TTS y el resto del pipeline).
+        </p>
       </div>
 
       {scriptEditorFullscreen && (
@@ -1182,16 +1505,15 @@ export function ScriptWriterPanel({
                         scriptCaretOffsetRef.current = scriptModalTextareaRef.current.selectionStart ?? null;
                       }
 
-                      setScriptUnderlineMode(next);
-                      // Ensure annotated HTML exists when enabling.
-                      if (next && !scriptAnnotatedHtml.trim()) {
-                        const stored = loadUnderlinesFromStorage();
-                        setScriptAnnotatedHtml(stored || toSafeHtml(scriptText));
+                      if (!next && scriptModalTextareaRef.current) {
+                        setScriptText(scriptModalTextareaRef.current.value);
                       }
-                      // Hydrate the editable DOM once when switching on.
+
+                      setScriptUnderlineMode(next);
                       if (next) {
-                        const stored = loadUnderlinesFromStorage();
-                        const initial = stored || toSafeHtml(scriptText);
+                        const plain =
+                          scriptModalTextareaRef.current?.value ?? scriptText;
+                        const initial = editorHtmlForPlainText(plain);
                         setScriptAnnotatedHtml(initial);
                         // Defer until after render.
                         queueMicrotask(() => {
@@ -1215,56 +1537,98 @@ export function ScriptWriterPanel({
                   />
                   Modo subrayado
                 </label>
-                <Btn type="button" className="bg-slate-900 text-white hover:bg-slate-800" disabled={scriptIoLocked}
-                  onClick={() => run("Guardar guion", async () => {
-                    // Persist the underline markup locally so it survives refreshes.
-                    if (scriptUnderlineMode && scriptUnderlineRef.current) {
-                      const html = scriptUnderlineRef.current.innerHTML;
-                      setScriptAnnotatedHtml(html);
-                      saveUnderlinesToStorage(html);
-                    }
-                    await putJson(`/api/script`, { work: workApplied, text: scriptText });
-                    await loadScript();
-                    setScriptEditorFullscreen(false);
-                  })}>
-                  Guardar en sesión
+                <Btn
+                  type="button"
+                  className="border border-slate-200 bg-white text-slate-800 ring-1 ring-slate-200 hover:bg-slate-50"
+                  disabled={scriptIoLocked || !scriptTextForExport().trim()}
+                  onClick={() => run("Guardar en…", async () => void saveScriptToChosenFile())}
+                >
+                  Guardar en…
                 </Btn>
-                <Btn type="button" className="bg-white text-slate-800 ring-1 ring-slate-200 hover:bg-slate-50" onClick={() => setScriptEditorFullscreen(false)}>
+                <Btn
+                  type="button"
+                  className="bg-violet-600 text-white hover:bg-violet-500"
+                  disabled={scriptIoLocked || savingScript}
+                  onClick={() =>
+                    run("Guardar en sesión", async () => {
+                      await saveScriptToSession({ closeEditor: true });
+                    })
+                  }
+                >
+                  {savingScript ? "Guardando…" : "Guardar en sesión y cerrar"}
+                </Btn>
+                <Btn
+                  type="button"
+                  className="bg-white text-slate-800 ring-1 ring-slate-200 hover:bg-slate-50"
+                  onClick={() =>
+                    run("Abrir carpeta", async () => {
+                      await postJson("/api/work-dir/reveal", {
+                        work: workApplied,
+                        highlight: "guion.txt",
+                      });
+                    })
+                  }
+                >
+                  Abrir carpeta
+                </Btn>
+                <Btn
+                  type="button"
+                  className="bg-white text-slate-800 ring-1 ring-slate-200 hover:bg-slate-50"
+                  onClick={() => {
+                    void loadScript({ force: true });
+                    setScriptEditorFullscreen(false);
+                  }}
+                >
                   Cerrar sin guardar
                 </Btn>
               </div>
             </div>
-            <div
-              ref={scriptUnderlineRef}
-              contentEditable={!scriptIoLocked}
-              suppressContentEditableWarning
-              spellCheck
-              onKeyUp={() => {
-                if (scriptUnderlineRef.current) {
-                  scriptCaretOffsetRef.current = _getTextCaretOffset(scriptUnderlineRef.current);
-                  if (scriptUnderlineMode) _toggleUnderlineSelection(scriptUnderlineRef.current);
-                }
-              }}
-              onMouseUp={() => {
-                if (scriptUnderlineRef.current) {
-                  scriptCaretOffsetRef.current = _getTextCaretOffset(scriptUnderlineRef.current);
-                  if (scriptUnderlineMode) _toggleUnderlineSelection(scriptUnderlineRef.current);
-                }
-              }}
-              onInput={(e) => {
-                const el = e.currentTarget;
-                const html = el.innerHTML;
-                setScriptAnnotatedHtml(html);
-                saveUnderlinesToStorage(html);
-                // Keep plain text in sync for saving to backend/pipeline.
-                setScriptText(el.innerText);
-                setScriptDirty(true);
-                scriptCaretOffsetRef.current = _getTextCaretOffset(el);
-              }}
-              className={`min-h-0 flex-1 overflow-auto border-0 px-4 py-3 font-mono text-sm leading-relaxed outline-none focus:ring-0 ${
-                scriptIoLocked ? "cursor-wait bg-slate-100 text-slate-600" : "bg-white text-slate-900"
-              }`}
-            />
+            {scriptUnderlineMode ? (
+              <div
+                ref={scriptUnderlineRef}
+                contentEditable={!scriptIoLocked}
+                suppressContentEditableWarning
+                spellCheck
+                onKeyUp={() => {
+                  if (scriptUnderlineRef.current) {
+                    scriptCaretOffsetRef.current = _getTextCaretOffset(scriptUnderlineRef.current);
+                    _toggleUnderlineSelection(scriptUnderlineRef.current);
+                  }
+                }}
+                onMouseUp={() => {
+                  if (scriptUnderlineRef.current) {
+                    scriptCaretOffsetRef.current = _getTextCaretOffset(scriptUnderlineRef.current);
+                    _toggleUnderlineSelection(scriptUnderlineRef.current);
+                  }
+                }}
+                onInput={(e) => {
+                  const el = e.currentTarget;
+                  const html = el.innerHTML;
+                  setScriptAnnotatedHtml(html);
+                  saveUnderlinesToStorage(html);
+                  setScriptText(el.innerText.replace(/\r\n/g, "\n"));
+                  setScriptDirty(true);
+                  scriptCaretOffsetRef.current = _getTextCaretOffset(el);
+                }}
+                className={`min-h-0 flex-1 overflow-auto border-0 px-4 py-3 font-mono text-sm leading-relaxed outline-none focus:ring-0 ${
+                  scriptIoLocked ? "cursor-wait bg-slate-100 text-slate-600" : "bg-white text-slate-900"
+                }`}
+              />
+            ) : (
+              <textarea
+                ref={scriptModalTextareaRef}
+                value={scriptText}
+                readOnly={scriptIoLocked}
+                onChange={(e) => {
+                  setScriptText(e.target.value);
+                  setScriptDirty(true);
+                }}
+                className={`min-h-0 flex-1 resize-none border-0 px-4 py-3 font-mono text-sm leading-relaxed outline-none focus:ring-0 ${
+                  scriptIoLocked ? "cursor-wait bg-slate-100 text-slate-600" : "bg-white text-slate-900"
+                }`}
+                spellCheck
+              />
+            )}
             <p className="shrink-0 border-t border-slate-100 px-4 py-2 text-[11px] leading-snug text-slate-500">
               <kbd className="rounded bg-slate-100 px-1 font-mono text-[10px]">Esc</kbd>
               {" "}· «Cerrar sin guardar» descarta cambios. «Guardar en sesión» guarda y cierra.

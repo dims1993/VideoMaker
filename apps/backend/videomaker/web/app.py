@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from videomaker.core import config
+from videomaker.core import config  # noqa: F401 — carga PROJECT_ROOT/.env al importar
 from videomaker.core.db import run_migrations
 from videomaker.core.models import ScriptBlueprint
 from videomaker.llm.script_gen import compose_messages
@@ -22,18 +21,21 @@ from .io_util import build_session_state, parse_locale, read_status, safe_work_d
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
-load_dotenv()
-
 app = FastAPI(title="Videomaker")
 
 
 @app.on_event("startup")
 def _startup():
+    import logging
+    import os
+
+    from videomaker.web.server_boot import SERVER_BOOT_AT, SERVER_BOOT_ID
+
+    logging.getLogger("videomaker").info(
+        "Server boot id=%s at=%s", SERVER_BOOT_ID, SERVER_BOOT_AT
+    )
     # DB opcional: solo se activa si hay NEON_DATABASE_URL configurada.
     # Si hay URL pero falla la migración, preferimos fallar rápido para no dar 500s raros más tarde.
-    import os
-    import logging
-
     has_db = bool(os.environ.get("NEON_DATABASE_URL", "").strip() or os.environ.get("DATABASE_URL", "").strip() or os.environ.get("NEON_DATABASE_PATH", "").strip())
     if not has_db:
         return
@@ -65,11 +67,9 @@ _CLONE_UPLOAD_MAX_BYTES = 25 * 1024 * 1024
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, work: str = "output/ui_session"):
-    try:
-        ctx = build_session_state(work)
-    except ValueError as e:
-        return HTMLResponse(str(e), status_code=400)
-    return templates.TemplateResponse(request, "index.html", ctx)
+    # Legacy HTML UI removed in favor of the SPA frontend.
+    # Redirect to the SPA entry point; the SPA uses the JSON API under /api.
+    return RedirectResponse(url="/ui", status_code=303)
 
 
 @app.get("/status")
@@ -80,25 +80,30 @@ def status(work: str = "output/ui_session"):
 
 @app.get("/view-script", response_class=HTMLResponse)
 def view_script(request: Request, work: str = "output/ui_session"):
-    work_dir = safe_work_dir(work)
-    p = work_dir / "guion.txt"
-    text = p.read_text(encoding="utf-8") if p.is_file() else ""
-    return templates.TemplateResponse(
-        request,
-        "script.html",
-        {"work": work, "text": text},
-    )
+    # Legacy endpoint disabled. Use the SPA or /api/script to fetch the script.
+    return HTMLResponse("Legacy view-script disabled. Use the SPA at /ui.", status_code=410)
 
 
-@app.get("/work-file")
-def work_file(work: str, name: str):
-    from fastapi.responses import FileResponse
-
+@app.api_route("/work-file", methods=["GET", "HEAD"])
+def work_file(request: Request, work: str, name: str):
     work_dir = safe_work_dir(work)
     safe = Path(name).name
     p = (work_dir / safe).resolve()
+    try:
+        p.relative_to(work_dir.resolve())
+    except ValueError:
+        return Response(status_code=404)
     if not p.is_file():
-        return HTMLResponse("Not found", status_code=404)
+        return Response(status_code=404)
+    if request.method == "HEAD":
+        media = "video/mp4" if p.suffix.lower() == ".mp4" else "application/octet-stream"
+        return Response(
+            status_code=200,
+            headers={
+                "Content-Length": str(p.stat().st_size),
+                "Content-Type": media,
+            },
+        )
     return FileResponse(str(p))
 
 
@@ -109,8 +114,8 @@ def voice_preview(
     preset: str = Form("xtts_v2_es"),
     text: str = Form("Hola, esta es una prueba de voz antes de narrar el vídeo."),
 ):
-    background.add_task(jobs.run_voice_preview, work, preset, text)
-    return RedirectResponse(url=f"/?work={work}", status_code=303)
+    # Legacy HTML form handler disabled. Use the SPA and the JSON API `/api/voice-preview` instead.
+    return HTMLResponse("Legacy voice-preview disabled. Use the SPA at /ui.", status_code=410)
 
 
 @app.post("/upload-voice-clone")
@@ -136,42 +141,18 @@ async def upload_voice_clone(
         return HTMLResponse("Archivo demasiado grande (máx. 25 MB).", status_code=400)
     raw = work_dir / f"_clone_upload{suffix}"
     out = work_dir / "clone_reference.wav"
-    try:
-        raw.write_bytes(data)
-        if out.is_file():
-            out.unlink()
-        normalize_reference_for_xtts(raw, out)
-    except Exception as e:
-        raw.unlink(missing_ok=True)
-        out.unlink(missing_ok=True)
-        return HTMLResponse(str(e), status_code=400)
-    finally:
-        raw.unlink(missing_ok=True)
-    return RedirectResponse(url=f"/?work={work}", status_code=303)
+    # Legacy HTML upload disabled. Use the SPA and the JSON API `/api/voice-preview` or `/api` endpoints.
+    return HTMLResponse("Legacy upload-voice-clone disabled. Use the SPA at /ui.", status_code=410)
 
 
 @app.post("/clear-voice-clone")
 def clear_voice_clone(work: str = Form("output/ui_session")):
-    work_dir = safe_work_dir(work)
-    (work_dir / "clone_reference.wav").unlink(missing_ok=True)
-    return RedirectResponse(url=f"/?work={work}", status_code=303)
+    return HTMLResponse("Legacy clear-voice-clone disabled. Use the SPA at /ui.", status_code=410)
 
 
 @app.post("/upload-script")
 async def upload_script(work: str = Form(...), file: UploadFile | None = None):
-    work_dir = safe_work_dir(work)
-    work_dir.mkdir(parents=True, exist_ok=True)
-    if file is None:
-        return RedirectResponse(url=f"/?work={work}", status_code=303)
-    data = await file.read()
-    (work_dir / "guion.txt").write_bytes(data)
-    try:
-        from videomaker.core.script_bundle import write_script_bundle
-
-        write_script_bundle(work_dir, data.decode("utf-8"))
-    except UnicodeDecodeError:
-        pass
-    return RedirectResponse(url=f"/?work={work}", status_code=303)
+    return HTMLResponse("Legacy upload-script disabled. Use the SPA at /ui.", status_code=410)
 
 
 @app.post("/prompt-preview", response_class=HTMLResponse)
@@ -183,18 +164,7 @@ def prompt_preview(
     lang: str = Form("es"),
     minutes: float = Form(8.0),
 ):
-    bp = ScriptBlueprint(
-        keywords=[k.strip() for k in keywords.split(",") if k.strip()],
-        extra_context=context or "",
-        locale=parse_locale(lang),
-        target_minutes=float(minutes),
-    )
-    system, user = compose_messages(bp)
-    return templates.TemplateResponse(
-        request,
-        "prompt.html",
-        {"work": work, "system": system, "user": user},
-    )
+    return HTMLResponse("Legacy prompt-preview disabled. Use the SPA or /api/prompt-preview.", status_code=410)
 
 
 @app.post("/generate-script")
@@ -208,17 +178,7 @@ def do_generate_script(
     provider: str = Form(""),
     model: str = Form(""),
 ):
-    background.add_task(
-        jobs.run_generate_script,
-        work,
-        keywords=keywords,
-        context=context,
-        lang=lang,
-        minutes=float(minutes),
-        provider=(provider.strip() or None),
-        model=(model or None),
-    )
-    return RedirectResponse(url=f"/?work={work}", status_code=303)
+    return HTMLResponse("Legacy generate-script disabled. Use the SPA or /api/generate-script.", status_code=410)
 
 
 @app.post("/speak-script")
@@ -229,27 +189,12 @@ def speak_script(
     max_chars: int = Form(900),
     max_segments: int = Form(0),
 ):
-    work_dir = safe_work_dir(work)
-    if not (work_dir / "guion.txt").is_file():
-        return RedirectResponse(url=f"/?work={work}", status_code=303)
-    background.add_task(
-        jobs.run_speak_script,
-        work,
-        preset=preset,
-        max_chars=int(max_chars),
-        max_segments=int(max_segments),
-    )
-    return RedirectResponse(url=f"/?work={work}", status_code=303)
+    return HTMLResponse("Legacy speak-script disabled. Use the SPA or /api/speak-script.", status_code=410)
 
 
 @app.post("/render-draft")
 def render_draft(background: BackgroundTasks, work: str = Form("output/ui_session"), no_music: bool = Form(False)):
-    work_dir = safe_work_dir(work)
-
-    if not (work_dir / "narracion.wav").is_file():
-        return RedirectResponse(url=f"/?work={work}", status_code=303)
-    background.add_task(jobs.run_render_draft, work, no_music=bool(no_music))
-    return RedirectResponse(url=f"/?work={work}", status_code=303)
+    return HTMLResponse("Legacy render-draft disabled. Use the SPA or /api/render-draft.", status_code=410)
 
 
 _UI_DIST = config.PROJECT_ROOT / "frontend" / "dist"

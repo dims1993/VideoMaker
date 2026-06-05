@@ -464,26 +464,14 @@ def fetch_transcript(video_id: str, *, lang: str = "es") -> tuple[str | None, st
     """
     Devuelve (lang_detected, transcript_text). Si no hay transcript, lang_detected=None y texto vacío.
     """
-    try:
-        from youtube_transcript_api import YouTubeTranscriptApi  # type: ignore
-    except Exception as e:
-        raise RuntimeError(
-            "Falta dependencia `youtube-transcript-api`. Instala requirements.txt en tu venv."
-        ) from e
+    from videomaker.youtube.transcript_fetch import fetch_video_transcript
 
-    langs = []
-    if lang:
-        langs.append(lang)
-    # fallbacks típicos
-    for x in ("es", "en"):
-        if x not in langs:
-            langs.append(x)
-    try:
-        rows = YouTubeTranscriptApi().fetch(video_id, languages=langs)
-    except Exception:
+    text, _err, _method = fetch_video_transcript(video_id, lang=lang)
+    text = (text or "").strip()
+    if not text:
         return None, ""
-    text = "\n".join((r.get("text") or "").strip() for r in rows if (r.get("text") or "").strip())
-    return (langs[0] if text else None), text.strip()
+    code = (lang or "es").strip().lower() or "es"
+    return code, text
 
 
 def _llm_provider() -> str:

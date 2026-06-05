@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .venv-*/
 apps/frontend/node_modules/
+workers/youtube-transcript-proxy/node_modules/
 apps/frontend/dist/
 
 # Env / secrets

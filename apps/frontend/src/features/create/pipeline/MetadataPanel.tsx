@@ -1,308 +1,547 @@
 import { useCallback, useEffect, useState } from "react";
-import { Btn, ExpandableTextArea, Label, Select } from "../../../components/ui";
-import { postJson, putJson } from "../../../services/api";
+import { Btn } from "../../../components/ui";
+import { JsonEditor } from "../../../components/ui/JsonEditor";
+import {
+  postJson,
+  putJson,
+  readApiError,
+  waitForPipelineStep,
+} from "../../../services/api";
 import type { RunFn } from "../types";
-import { PipelineSection as Section } from "./PipelineSection";
+import { MetadataInputPreviewSection } from "./MetadataInputPreviewSection";
+import { MetadataThumbnailsSection } from "./MetadataThumbnailsSection";
+import {
+  buildYoutubeDescriptionFromMetadata,
+  parseMetadataForYoutube,
+} from "./youtubeDescription";
+import { PipelineStepConfirmBar } from "./PipelineStepConfirmBar";
 
-type PlatformId = "youtube" | "tiktok" | "reels";
+type MetadataSettings = {
+  target_platform: "youtube" | "tiktok" | "reels";
+  target_keywords: string;
+  target_keywords_effective?: string;
+  target_keywords_source?: "manual" | "inferred" | null;
+  system_prompt: string;
+  default_system_prompt?: string;
+};
+
+type MetadataArtifact = {
+  exists: boolean;
+  metadata: Record<string, unknown> | null;
+};
 
 export function MetadataPanel({
   run,
   workApplied,
   lang,
+  kw,
+  ctx,
+  minutes,
+  provider,
+  model,
   refreshPipeline,
   metadataStepState,
 }: {
   run: RunFn;
   workApplied: string;
   lang: string;
+  kw: string;
+  ctx: string;
+  minutes: number;
+  provider: string;
+  model: string;
   refreshPipeline: () => Promise<void>;
   metadataStepState: string;
 }) {
-  const [jsonText, setJsonText] = useState("");
-  const [loaded, setLoaded] = useState(false);
+  const [settings, setSettings] = useState<MetadataSettings | null>(null);
+  const [artifact, setArtifact] = useState<MetadataArtifact | null>(null);
+  const [editedArtifact, setEditedArtifact] = useState<string>("");
+  const [mode, setMode] = useState<"auto" | "manual">("auto");
+  const [previewRefreshKey, setPreviewRefreshKey] = useState(0);
+  const [previewReady, setPreviewReady] = useState(true);
+  const [openaiModel, setOpenaiModel] = useState("gpt-4o-mini");
+  const [copyYoutubeMsg, setCopyYoutubeMsg] = useState<string | null>(null);
+  const [packagingExists, setPackagingExists] = useState(false);
+
   const generationRunning = metadataStepState === "running";
 
-  const [targetPlatform, setTargetPlatform] = useState<PlatformId>("youtube");
-  const [targetKeywords, setTargetKeywords] = useState("");
-  const [systemPrompt, setSystemPrompt] = useState("");
-  const [settingsHydrated, setSettingsHydrated] = useState(false);
+  useEffect(() => {
+    void fetch("/api/llm/defaults")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { openai_model?: string } | null) => {
+        if (d?.openai_model?.trim()) setOpenaiModel(d.openai_model.trim());
+      })
+      .catch(() => undefined);
+  }, []);
 
-  const [imagePromptsText, setImagePromptsText] = useState("");
-  const [imagePromptsLoaded, setImagePromptsLoaded] = useState(false);
+  const langLabel = lang === "en" ? "English" : "Español";
 
-  const [includeAvatar, setIncludeAvatar] = useState(false);
-  const [avatarName, setAvatarName] = useState<string | null>(null);
-
-  const loadMetadata = useCallback(async () => {
-    const r = await fetch(`/api/pipeline/metadata?work=${encodeURIComponent(workApplied)}`);
-    if (!r.ok) return;
-    const j = (await r.json()) as { exists?: boolean; metadata?: Record<string, unknown> | null };
-    if (j.exists && j.metadata && typeof j.metadata === "object") {
-      setJsonText(JSON.stringify(j.metadata, null, 2)); setLoaded(true);
-    } else { setJsonText(""); setLoaded(false); }
-  }, [workApplied]);
-
-  const hydrateSettings = useCallback(async () => {
-    setSettingsHydrated(false);
-    const r = await fetch(`/api/pipeline/metadata-settings?work=${encodeURIComponent(workApplied)}&lang=${encodeURIComponent(lang)}`);
-    if (!r.ok) {
-      setSettingsHydrated(true);
-      return;
+  const loadSettings = useCallback(async () => {
+    try {
+      const r = await fetch(
+        `/api/pipeline/metadata-settings?work=${encodeURIComponent(workApplied)}&lang=${lang}`,
+      );
+      if (!r.ok) throw new Error((await readApiError(r)) || r.statusText);
+      const data = (await r.json()) as MetadataSettings;
+      setSettings(data);
+    } catch (e) {
+      console.error("Failed to load metadata settings", e);
     }
-    const j = (await r.json()) as { target_platform?: string; target_keywords?: string; system_prompt?: string };
-    if (j.target_platform === "youtube" || j.target_platform === "tiktok" || j.target_platform === "reels") setTargetPlatform(j.target_platform);
-    if (j.target_keywords !== undefined) setTargetKeywords(j.target_keywords);
-    if (j.system_prompt !== undefined) setSystemPrompt(j.system_prompt);
-    setSettingsHydrated(true);
   }, [workApplied, lang]);
 
-  const persistSettings = useCallback(async () => {
-    await putJson(`/api/pipeline/metadata-settings`, {
-      work: workApplied,
-      target_platform: targetPlatform,
-      target_keywords: targetKeywords,
-      system_prompt: systemPrompt.trim(),
-    });
-  }, [workApplied, targetPlatform, targetKeywords, systemPrompt]);
-
-  const loadAvatarInfo = useCallback(async () => {
-    const r = await fetch(`/api/pipeline/image-prompt-writer-settings?work=${encodeURIComponent(workApplied)}`);
-    if (!r.ok) return;
-    const j = (await r.json()) as { use_avatar?: boolean; avatar_id?: string; avatar_description?: string };
-    if (!j.use_avatar || !j.avatar_id) { setAvatarName(null); return; }
-    const ra = await fetch(`/api/avatars/${encodeURIComponent(j.avatar_id)}`);
-    if (!ra.ok) { setAvatarName(null); return; }
-    const av = (await ra.json()) as { name?: string };
-    setAvatarName(av.name ?? null);
-  }, [workApplied]);
-
-  const loadImagePrompts = useCallback(async () => {
-    const r = await fetch(`/api/pipeline/image-prompts?work=${encodeURIComponent(workApplied)}`);
-    if (!r.ok) { setImagePromptsText(""); setImagePromptsLoaded(false); return; }
-    const j = (await r.json()) as { exists?: boolean; bundle?: unknown };
-    if (j.exists && j.bundle) {
-      setImagePromptsText(JSON.stringify(j.bundle, null, 2));
-      setImagePromptsLoaded(true);
-    } else {
-      setImagePromptsText(""); setImagePromptsLoaded(false);
+  const loadArtifact = useCallback(async () => {
+    try {
+      const r = await fetch(
+        `/api/pipeline/metadata?work=${encodeURIComponent(workApplied)}`,
+      );
+      if (!r.ok) throw new Error((await readApiError(r)) || r.statusText);
+      const data = (await r.json()) as MetadataArtifact;
+      setArtifact(data);
+      setEditedArtifact(
+        data.metadata ? JSON.stringify(data.metadata, null, 2) : "{}",
+      );
+    } catch (e) {
+      console.error("Failed to load metadata artifact", e);
     }
   }, [workApplied]);
 
-  useEffect(() => { void loadMetadata(); }, [loadMetadata, metadataStepState, workApplied]);
-  useEffect(() => { void hydrateSettings(); }, [hydrateSettings]);
-  useEffect(() => { void loadImagePrompts(); }, [loadImagePrompts]);
-  useEffect(() => { void loadAvatarInfo(); }, [loadAvatarInfo]);
+  const loadPackagingFlag = useCallback(async () => {
+    try {
+      const r = await fetch(
+        `/api/pipeline/packaging?work=${encodeURIComponent(workApplied)}`,
+      );
+      if (!r.ok) {
+        setPackagingExists(false);
+        return;
+      }
+      const data = (await r.json()) as { exists?: boolean };
+      setPackagingExists(Boolean(data.exists));
+    } catch {
+      setPackagingExists(false);
+    }
+  }, [workApplied]);
 
   useEffect(() => {
-    if (!settingsHydrated) return;
-    const id = window.setTimeout(() => {
-      void persistSettings().catch((e) => console.error("metadata-settings persist", e));
-    }, 650);
-    return () => window.clearTimeout(id);
-  }, [settingsHydrated, targetPlatform, targetKeywords, systemPrompt, persistSettings]);
+    void loadSettings();
+    void loadArtifact();
+    void loadPackagingFlag();
+  }, [loadSettings, loadArtifact, loadPackagingFlag]);
 
-  const onPlatformChange = (p: PlatformId) => {
-    setTargetPlatform(p);
-    void (async () => {
-      const r = await fetch(
-        `/api/pipeline/metadata-settings?work=${encodeURIComponent(workApplied)}&lang=${encodeURIComponent(lang)}&preview_platform=${encodeURIComponent(p)}`,
-      );
-      if (!r.ok) return;
-      const j = (await r.json()) as { default_system_prompt?: string };
-      if (typeof j.default_system_prompt === "string") setSystemPrompt(j.default_system_prompt);
-    })();
-  };
-
-  const handleSave = async () => {
-    const trimmed = jsonText.trim();
-    if (!trimmed) throw new Error("El cuadro está vacío. Usa «Start step» para generar o pega un objeto JSON antes de guardar.");
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(trimmed) as Record<string, unknown>;
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("El JSON debe ser un objeto en la raíz { … }, no un array.");
-    } catch (e) {
-      throw new Error(e instanceof SyntaxError ? "JSON inválido (revisa comillas, comas y llaves)." : e instanceof Error ? e.message : String(e));
+  useEffect(() => {
+    if (metadataStepState === "done") {
+      void loadArtifact();
     }
-    await putJson(`/api/pipeline/metadata`, { work: workApplied, metadata: parsed });
-    await loadMetadata();
-    await refreshPipeline();
+  }, [metadataStepState, loadArtifact]);
+
+  const handleSaveSettings = () =>
+    run("Guardar ajustes de metadatos", async () => {
+      if (!settings) return;
+      await putJson("/api/pipeline/metadata-settings", {
+        work: workApplied,
+        target_platform: settings.target_platform,
+        target_keywords: settings.target_keywords,
+        system_prompt: settings.system_prompt,
+        target_keywords_source: settings.target_keywords.trim()
+          ? "manual"
+          : undefined,
+        system_prompt_source: settings.system_prompt.trim()
+          ? "manual"
+          : undefined,
+      });
+      await loadSettings();
+      await refreshPipeline();
+    });
+
+  const persistSettingsForGenerate = async () => {
+    if (!settings) return;
+    const r = await fetch(
+      `/api/pipeline/metadata-settings?work=${encodeURIComponent(workApplied)}&lang=${lang}`,
+    );
+    const onDisk = r.ok
+      ? ((await r.json()) as MetadataSettings)
+      : { target_keywords: "", system_prompt: "" };
+    await putJson("/api/pipeline/metadata-settings", {
+      work: workApplied,
+      target_platform: settings.target_platform,
+      target_keywords:
+        mode === "manual" ? settings.target_keywords : "",
+      system_prompt: mode === "manual" ? settings.system_prompt : "",
+      target_keywords_source:
+        mode === "manual" && settings.target_keywords.trim()
+          ? "manual"
+          : undefined,
+      system_prompt_source:
+        mode === "manual" && settings.system_prompt.trim()
+          ? "manual"
+          : undefined,
+    });
   };
+
+  const handleGenerate = () =>
+    run("Generar metadatos (IA)", async () => {
+      if (settings) {
+        await persistSettingsForGenerate();
+      }
+      await postJson(`/api/pipeline/step/rerun`, {
+        work: workApplied,
+        step_id: "metadata",
+        keywords: kw,
+        context: ctx,
+        lang,
+        minutes,
+        provider: "openai",
+        model:
+          provider === "openai" && model.trim() ? model.trim() : openaiModel,
+      });
+      await waitForPipelineStep(workApplied, "metadata");
+      await refreshPipeline();
+      await loadArtifact();
+      setPreviewRefreshKey((k) => k + 1);
+    });
+
+  const handleCopyYoutubeDescription = async () => {
+    const { metadata, parseError } = parseMetadataForYoutube(editedArtifact);
+    if (parseError || !metadata) {
+      setCopyYoutubeMsg(parseError ?? "JSON inválido");
+      return;
+    }
+    const built = buildYoutubeDescriptionFromMetadata(metadata);
+    if (!built.text.trim()) {
+      setCopyYoutubeMsg(built.warnings[0] ?? "Nada que copiar");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(built.text);
+      const bits: string[] = [];
+      if (built.hasDescription) bits.push("descripción");
+      if (built.chapterCount > 0) {
+        bits.push(
+          `${built.chapterCount} capítulo${built.chapterCount === 1 ? "" : "s"}`,
+        );
+      }
+      if (built.tagCount > 0) {
+        bits.push(`${built.tagCount} tag${built.tagCount === 1 ? "" : "s"}`);
+      }
+      const hint = bits.length ? `Copiado (${bits.join(" · ")})` : "Copiado";
+      setCopyYoutubeMsg(
+        built.warnings.length ? `${hint} · ${built.warnings[0]}` : hint,
+      );
+    } catch {
+      setCopyYoutubeMsg("No se pudo acceder al portapapeles");
+    }
+    window.setTimeout(() => setCopyYoutubeMsg(null), 4000);
+  };
+
+  const handleSaveArtifact = () =>
+    run("Guardar metadatos (manual)", async () => {
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(editedArtifact);
+      } catch (e) {
+        alert(`JSON inválido: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+      await putJson("/api/pipeline/metadata", {
+        work: workApplied,
+        metadata: parsed,
+      });
+      await refreshPipeline();
+      await loadArtifact();
+    });
+
+  const handleLoadDefaultPrompt = () =>
+    run("Cargar prompt por defecto", async () => {
+      if (!settings) return;
+      const r = await fetch(
+        `/api/pipeline/metadata-settings?work=${encodeURIComponent(workApplied)}&lang=${lang}&preview_platform=${settings.target_platform}`,
+      );
+      if (!r.ok) throw new Error((await readApiError(r)) || r.statusText);
+      const data = (await r.json()) as MetadataSettings;
+      if (data.default_system_prompt) {
+        setSettings((s) =>
+          s ? { ...s, system_prompt: data.default_system_prompt ?? "" } : null,
+        );
+      }
+    });
 
   return (
-    <div className="rounded-2xl bg-slate-900 p-4 space-y-3">
+    <div className="space-y-4">
+      <PipelineStepConfirmBar
+        stepId="metadata"
+        stepLabel="Metadata"
+        workApplied={workApplied}
+        stepState={metadataStepState}
+        run={run}
+        onAfterRun={refreshPipeline}
+      />
+      <MetadataInputPreviewSection
+        workApplied={workApplied}
+        lang={lang}
+        kw={kw}
+        ctx={ctx}
+        minutes={minutes}
+        provider={provider}
+        model={model}
+        targetPlatform={settings?.target_platform ?? "youtube"}
+        refreshKey={previewRefreshKey}
+        onReadyChange={setPreviewReady}
+      />
 
-      {/* Info — orden del proceso */}
-      <div className="rounded-xl border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
-        <span className="font-semibold">Metadata — orden del proceso.</span>{" "}
-        <span className="text-amber-200/95">
-          <strong className="text-amber-100">1</strong> Ajustes (plataforma, claves, system prompt) antes del LLM.{" "}
-          <strong className="text-amber-100">2</strong> En la tarjeta del paso, «Start step» genera el JSON; aquí revisas o editas <code className="rounded bg-amber-900/40 px-1">pipeline/metadata.json</code> y guardas en sesión.{" "}
-          <strong className="text-amber-100">3</strong> Si en <code className="rounded bg-amber-900/40 px-1">editorial.thumbnail_ideas</code> hay ideas, envíalas al pipeline de imágenes.
-        </span>{" "}
-        Incluye título, descripción por actos, capítulos,{" "}
-        <code className="rounded bg-amber-900/40 px-1">hook_type</code>/<code className="rounded bg-amber-900/40 px-1">hook_summary</code>, production/marketing y <code className="rounded bg-amber-900/40 px-1">_gen</code>.
+      <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+        Con <strong>Packaging (Título + Miniatura)</strong> ya fijado, este paso solo deriva del
+        guion la <strong>descripción</strong>, <strong>tags</strong> y <strong>capítulos</strong>{" "}
+        (idioma: {langLabel}). Las ideas de miniatura salen de{" "}
+        <code className="rounded bg-white px-1">packaging.json</code>, no se regeneran aquí.
+        En automático, las instrucciones al modelo son compactas (plataforma + guion + sesión);
+        no se reutiliza un system prompt largo guardado por error. La generación usa{" "}
+        <strong>OpenAI API</strong> ({openaiModel}), no el proveedor Ollama del guion.
+      </p>
+      {settings?.system_prompt_source !== "manual" &&
+      settings?.system_prompt?.trim() ? (
+        <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          Hay un system prompt antiguo en disco; en modo automático se ignora. Borra el archivo o
+          usa modo manual si quieres aplicarlo.
+        </p>
+      ) : null}
+      {settings?.target_keywords_source === "inferred" &&
+      settings.target_keywords?.trim() ? (
+        <p className="rounded-lg border border-violet-100 bg-violet-50 px-3 py-2 text-xs text-violet-900">
+          Última inferencia guardada (referencia):{" "}
+          <span className="font-medium">{settings.target_keywords}</span> — no se
+          reutiliza en modo automático; vuelve a generar para refrescar desde el guion.
+        </p>
+      ) : null}
+
+      {/* Selector de modo */}
+      <div className="flex gap-4 border-b border-slate-200 pb-2">
+        <label className="flex cursor-pointer items-center gap-2">
+          <input
+            type="radio"
+            name="metadata_mode"
+            checked={mode === "auto"}
+            onChange={() => setMode("auto")}
+            className="text-violet-600 focus:ring-violet-500"
+          />
+          <span className="text-sm font-medium text-slate-700">
+            IA Automática
+          </span>
+        </label>
+        <label className="flex cursor-pointer items-center gap-2">
+          <input
+            type="radio"
+            name="metadata_mode"
+            checked={mode === "manual"}
+            onChange={() => setMode("manual")}
+            className="text-violet-600 focus:ring-violet-500"
+          />
+          <span className="text-sm font-medium text-slate-700">
+            Configuración Manual
+          </span>
+        </label>
       </div>
 
-      {generationRunning && (
-        <div className="rounded-xl border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
-          Generando metadata con el modelo… el editor va en solo lectura hasta que termine.
+      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 bg-slate-50/80 p-4">
+          <h3 className="text-sm font-semibold text-slate-800">
+            {mode === "auto"
+              ? "1. Generación Automática"
+              : "1. Ajustes de Generación"}
+          </h3>
+          {mode === "manual" && (
+            <Btn
+              className="bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200 hover:bg-indigo-100"
+              onClick={handleSaveSettings}
+              disabled={generationRunning || !settings}
+            >
+              Guardar Ajustes
+            </Btn>
+          )}
         </div>
-      )}
-
-      {/* 1 · Ajustes (entrada al LLM) */}
-      <Section id="meta-settings" badge="1" title="Ajustes de generación" description="Antes de «Start step» en la tarjeta del paso. Los cambios se guardan solos en la sesión. Al cambiar la plataforma se inserta el prompt predeterminado del servidor (editable en pantalla completa).">
-        <div className="space-y-4">
-          <div>
-            <Label>Plataforma destino</Label>
-            <Select value={targetPlatform} onChange={(e) => onPlatformChange(e.target.value as PlatformId)} disabled={generationRunning || !settingsHydrated}>
+        <div className="space-y-4 p-4">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Plataforma de Destino
+            </span>
+            <select
+              className="max-w-xs rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800"
+              value={settings?.target_platform ?? "youtube"}
+              onChange={(e) =>
+                setSettings(
+                  (s) =>
+                    ({
+                      ...s,
+                      target_platform: e.target.value,
+                    }) as MetadataSettings,
+                )
+              }
+              disabled={generationRunning}
+            >
               <option value="youtube">YouTube</option>
               <option value="tiktok">TikTok</option>
-              <option value="reels">Reels (Instagram)</option>
-            </Select>
-            <p className="mt-1 text-[11px] leading-snug text-slate-500">
-              Al elegir una plataforma se carga el prompt predeterminado del servidor para esa red (puedes editarlo abajo).
+              <option value="reels">Instagram Reels</option>
+            </select>
+            <p className="text-xs text-slate-500">
+              Adapta los campos y el estilo de los metadatos a la plataforma. Se guarda al
+              generar.
             </p>
-          </div>
+          </label>
 
-          <div>
-            <ExpandableTextArea
-              label="Palabras clave objetivo"
-              value={targetKeywords}
-              onChange={setTargetKeywords}
-              placeholder='"comprar casa", fondos indexados, temas SEO…'
-              modalTitle="Metadata · Palabras clave objetivo"
-              variant="output"
-              disabled={generationRunning || !settingsHydrated}
-              disabledTitle={generationRunning ? "No disponible mientras se genera" : !settingsHydrated ? "Cargando ajustes desde la sesión…" : undefined}
-            />
-          </div>
-
-          <div>
-            <ExpandableTextArea
-              label="System prompt"
-              value={systemPrompt}
-              onChange={setSystemPrompt}
-              placeholder="Vacío en disco = en generación se usa el predeterminado del servidor para la plataforma."
-              modalTitle="Metadata · System prompt"
-              variant="output"
-              disabled={generationRunning || !settingsHydrated}
-              disabledTitle={generationRunning ? "No disponible mientras se genera" : !settingsHydrated ? "Cargando ajustes desde la sesión…" : undefined}
-            />
-            <p className="mb-0 mt-1 text-[11px] leading-snug text-slate-500">
-              Clic en el recuadro o «✎ editar» · <kbd className="rounded bg-slate-700 px-1 font-mono text-[10px]">Guardar</kbd> en el modal aplica el texto y se guarda en la sesión unos instantes después.
-            </p>
-          </div>
-        </div>
-      </Section>
-
-      {/* 2 · Salida JSON (tras Start step o edición manual) */}
-      <Section id="meta-output" badge="2" title="Salida · metadata.json" description="Resultado del LLM o edición manual. Guarda en sesión para escribir disco antes del paso 3.">
-        <div className="space-y-2">
-          <div className="flex flex-wrap justify-end gap-2">
-            <Btn type="button" className="border border-slate-600 bg-slate-800 text-slate-200 hover:bg-slate-700" onClick={() => void loadMetadata()}>Recargar desde disco</Btn>
-          </div>
-          <ExpandableTextArea
-            value={jsonText}
-            onChange={setJsonText}
-            placeholder="Tras «Start step» aparecerá JSON (version, platform, editorial, production…)"
-            modalTitle="pipeline/metadata.json"
-            variant="output"
-            disabled={generationRunning}
-            disabledTitle={generationRunning ? "No disponible mientras se genera" : undefined}
-          />
-          <div className="flex flex-wrap gap-2">
-            <Btn className="bg-white text-slate-900 hover:bg-slate-100" disabled={generationRunning}
-              onClick={() => run("Guardar metadata", handleSave)}>
-              Guardar en sesión
-            </Btn>
-            <span className="self-center text-[11px] text-slate-500">
-              Tras editar en pantalla completa, confirma aquí para escribir <code className="rounded bg-slate-700 px-1">pipeline/metadata.json</code>.
-            </span>
-          </div>
-        </div>
-      </Section>
-
-      {/* 3 · Miniaturas (lee metadata.json ya guardado) */}
-      <Section id="meta-thumbnails-push" badge="3" title="Miniaturas → pipeline de imágenes" description="Solo después de tener metadata en disco con editorial.thumbnail_ideas. Copia esas cadenas a pipeline/image_prompts.json para el paso Imágenes.">
-        <div className="space-y-3">
-          {/* Toggle avatar */}
-          <div className="flex flex-wrap items-start gap-3 rounded-xl border border-slate-700 bg-slate-800/50 px-3 py-2.5">
-            <label className="flex cursor-pointer items-center gap-2.5">
-              <div
-                role="checkbox"
-                aria-checked={includeAvatar}
-                tabIndex={0}
-                className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${includeAvatar ? "bg-blue-500" : "bg-slate-600"}`}
-                onClick={() => setIncludeAvatar((v) => !v)}
-                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setIncludeAvatar((v) => !v); } }}
+          {mode === "auto" && (
+            <div className="pt-2">
+              <Btn
+                className="bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50"
+                onClick={handleGenerate}
+                disabled={generationRunning || !previewReady}
               >
-                <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${includeAvatar ? "translate-x-4" : "translate-x-0.5"}`} />
-              </div>
-              <span className="text-xs font-medium text-slate-200">Incluir avatar en las miniaturas</span>
-            </label>
-            {includeAvatar && (
-              <span className="text-[11px] text-slate-400">
-                {avatarName
-                  ? <>Avatar: <span className="font-medium text-blue-300">{avatarName}</span> (configurado en Image Prompt Writer)</>
-                  : <span className="text-amber-400">No hay avatar configurado en Image Prompt Writer — se usará la descripción por defecto.</span>
-                }
-              </span>
-            )}
-            {!includeAvatar && (
-              <span className="text-[11px] text-slate-500">
-                Activa para añadir el personaje del canal a cada prompt de miniatura.
-              </span>
-            )}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <Btn type="button" className="bg-white text-slate-900 hover:bg-slate-100 disabled:opacity-40"
-              disabled={generationRunning || !loaded}
-              title={!loaded ? "Genera y guarda metadata antes (paso 2) para tener editorial.thumbnail_ideas" : undefined}
-              onClick={() => run("Miniaturas → pipeline imágenes", async () => {
-                await postJson(`/api/pipeline/metadata/push-thumbnails-to-images`, { work: workApplied, include_avatar: includeAvatar });
-                await refreshPipeline();
-                await loadImagePrompts();
-              })}>
-              Generar miniaturas → pipeline de imágenes
-            </Btn>
-            <span className="text-[11px] text-slate-400">
-              Origen: <code className="rounded bg-slate-700 px-1">editorial.thumbnail_ideas</code> en el JSON del paso 2.
-            </span>
-          </div>
-
-          {imagePromptsLoaded && (
-            <div className="space-y-1">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-medium text-slate-400">pipeline/image_prompts.json generado</span>
-                <Btn type="button" className="border border-slate-600 bg-slate-800 text-slate-200 hover:bg-slate-700 text-[11px] py-0.5 px-2" onClick={() => void loadImagePrompts()}>
-                  Recargar
-                </Btn>
-              </div>
-              <ExpandableTextArea
-                value={imagePromptsText}
-                onChange={setImagePromptsText}
-                placeholder=""
-                modalTitle="pipeline/image_prompts.json"
-                variant="output"
-              />
+                {generationRunning
+                  ? "Generando..."
+                  : "Generar Metadatos con IA"}
+              </Btn>
+              {!previewReady ? (
+                <p className="mt-2 text-xs text-rose-600">
+                  Revisa el checklist del preview (falta guion u otro requisito).
+                </p>
+              ) : null}
             </div>
           )}
 
-          {!imagePromptsLoaded && (
-            <p className="text-[11px] text-slate-500">
-              Aún no hay <code className="rounded bg-slate-800 px-1">image_prompts.json</code> en disco. Pulsa el botón de arriba para generarlo.
-            </p>
+          {mode === "manual" && (
+            <label className="flex flex-col gap-1 border-t border-slate-100 pt-4">
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Palabras Clave Objetivo (SEO)
+              </span>
+              <textarea
+                className="min-h-[60px] w-full rounded-lg border border-slate-200 p-2 text-sm"
+                placeholder="Ej: finanzas personales, invertir desde cero, errores de inversión"
+                value={
+                  settings?.target_keywords_source === "manual"
+                    ? (settings?.target_keywords ?? "")
+                    : ""
+                }
+                onChange={(e) =>
+                  setSettings(
+                    (s) =>
+                      ({
+                        ...s,
+                        target_keywords: e.target.value,
+                      }) as MetadataSettings,
+                  )
+                }
+                disabled={generationRunning}
+              />
+              <p className="text-xs text-slate-500">
+                Opcional: si las dejas vacías en automático, la IA las infiere del guion
+                (platform.tags). El tema de sesión / Topic Generator no se usa como tags SEO.
+              </p>
+            </label>
           )}
         </div>
-      </Section>
+      </div>
 
-      {!loaded && !generationRunning && (
-        <p className="text-xs text-slate-500">
-          Sin <code className="rounded bg-slate-800 px-1">metadata.json</code> en disco: completa el paso <strong className="text-slate-300">1</strong>, ejecuta <strong className="text-slate-300">Start step</strong> en la tarjeta del paso Metadata y revisa el paso <strong className="text-slate-300">2</strong>.
-        </p>
+      {mode === "manual" && (
+        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 bg-slate-50/80 p-4">
+            <h3 className="text-sm font-semibold text-slate-800">
+              2. System Prompt (Opcional)
+            </h3>
+            <Btn
+              className="bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
+              onClick={handleLoadDefaultPrompt}
+              disabled={generationRunning || !settings}
+            >
+              Cargar prompt por defecto
+            </Btn>
+          </div>
+          <div className="space-y-2 p-4">
+            <textarea
+              className="min-h-[200px] w-full rounded-lg border border-slate-200 p-2 font-mono text-xs"
+              placeholder="Dejar vacío para usar el prompt por defecto del servidor..."
+              value={
+                settings?.system_prompt_source === "manual"
+                  ? (settings?.system_prompt ?? "")
+                  : ""
+              }
+              onChange={(e) =>
+                setSettings(
+                  (s) =>
+                    ({
+                      ...s,
+                      system_prompt: e.target.value,
+                    }) as MetadataSettings,
+                )
+              }
+              disabled={generationRunning}
+            />
+            <p className="text-xs text-slate-500">
+              Opcional y avanzado: añade reglas extra. En automático se usan
+              instrucciones compactas (plataforma + idioma de sesión + guion).
+              Guárdalo con &quot;Guardar Ajustes&quot; para activarlo.
+            </p>
+          </div>
+        </div>
       )}
+
+      <MetadataThumbnailsSection
+        run={run}
+        workApplied={workApplied}
+        generationRunning={generationRunning}
+        artifactExists={Boolean(artifact?.exists) || packagingExists}
+        refreshPipeline={refreshPipeline}
+      />
+
+      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 bg-slate-50/80 p-4">
+          <h3 className="text-sm font-semibold text-slate-800">
+            {mode === "auto"
+              ? "2. Artefacto Generado (metadata.json)"
+              : "3. Artefacto Generado (metadata.json)"}
+          </h3>
+          <div className="flex flex-wrap items-center gap-2">
+            <Btn
+              type="button"
+              className="bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50 disabled:opacity-40"
+              onClick={() => void handleCopyYoutubeDescription()}
+              disabled={generationRunning || !artifact?.exists}
+              title="platform.description + capítulos + hashtags desde platform.tags"
+            >
+              Copiar descripción YouTube
+            </Btn>
+            <Btn
+              className="bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 hover:bg-emerald-100"
+              onClick={handleSaveArtifact}
+              disabled={generationRunning || !artifact?.exists}
+            >
+              Guardar Cambios en JSON
+            </Btn>
+          </div>
+        </div>
+        <div className="p-4">
+          {copyYoutubeMsg ? (
+            <p
+              className={`mb-3 text-xs leading-snug ${
+                copyYoutubeMsg.startsWith("Copiado")
+                  ? "text-emerald-700"
+                  : "text-amber-800"
+              }`}
+            >
+              {copyYoutubeMsg}
+            </p>
+          ) : null}
+          {artifact?.exists ? (
+            <JsonEditor
+              value={editedArtifact}
+              onChange={setEditedArtifact}
+              readOnly={generationRunning}
+              height="600px"
+            />
+          ) : (
+            <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-500">
+              <p>No se ha generado ningún artefacto de metadatos todavía.</p>
+              <p className="mt-1">Ejecuta la generación para crearlo.</p>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

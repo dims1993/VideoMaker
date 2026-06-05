@@ -116,27 +116,7 @@ export function SavedPearlsSection({ api, workApplied, run }: { api: AnalyzeChan
           await refreshSavedChannelVideos(selectedSavedChannelId);
         })
       }
-      onDownloadTranscriptsJson={() =>
-        run("Descargar transcripts JSON", async () => {
-          const ids = selectedVideoIds.length ? selectedVideoIds : [];
-          const r = await fetch(`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/transcripts.json`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ work: workApplied, video_ids: ids, limit: 50, lang: editLang || "es" }),
-          });
-          if (!r.ok) return;
-          const text = await r.text();
-          const blob = new Blob([text], { type: "application/json" });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = `transcripts_${selectedSavedChannelId}.json`;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          URL.revokeObjectURL(url);
-        })
-      }
+      run={run}
     />
   ) : (
     <div className="space-y-2">

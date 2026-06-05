@@ -8,6 +8,20 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# Puertos colgados (reload de uvicorn + tormenta de fetch) impiden reiniciar
+if lsof -ti :8000 >/dev/null 2>&1 || lsof -ti :5173 >/dev/null 2>&1; then
+  echo "==> Liberando puertos 8000 / 5173 si estaban ocupados…"
+  bash "$ROOT/scripts/dev-kill.sh"
+fi
+
+# Exporta .env del repo (evita ANTHROPIC_API_KEY="" en el shell que bloquea python-dotenv)
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
+
 if [[ ! -d .venv ]]; then
   echo "No hay .venv. Crea el entorno con:"
   echo "  bash scripts/setup_venv.sh"
@@ -43,7 +57,8 @@ echo ""
 echo "  Ctrl+C para detener ambos procesos."
 echo ""
 
-.venv/bin/python -m uvicorn --app-dir "$ROOT/apps/backend" videomaker.web.app:app --host 127.0.0.1 --port 8000 --reload &
+.venv/bin/python -m uvicorn --app-dir "$ROOT/apps/backend" videomaker.web.app:app \
+  --host 127.0.0.1 --port 8000 --reload --timeout-graceful-shutdown 3 &
 UV_PID=$!
 
 (cd apps/frontend && npm run dev) &

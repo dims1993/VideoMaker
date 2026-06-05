@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
+import { TranscriptsSessionPanel } from "../../analyze/TranscriptsSessionPanel";
 import { Btn, InfoTip, Input, Label, Select, StatusBadge } from "../../../components/ui";
 import type { ChannelVideoItem, SavedChannelItem } from "../../../types";
+import type { RunFn } from "../../../types/run";
 
 type TaskOrStatus = { state: string; detail: string } | null;
 
@@ -192,7 +194,7 @@ export function SavedChannelDetail(props: {
   onSaveClassification: () => void;
   onSyncNow: (maxVideos: number) => void;
   onBackfill: () => void;
-  onDownloadTranscriptsJson: () => void;
+  run: RunFn;
 }) {
   const {
     selectedSavedChannelId,
@@ -228,7 +230,7 @@ export function SavedChannelDetail(props: {
     onSaveClassification,
     onSyncNow,
     onBackfill,
-    onDownloadTranscriptsJson,
+    run,
     workApplied,
   } = props;
 
@@ -458,9 +460,6 @@ export function SavedChannelDetail(props: {
           <Btn className="bg-slate-900 text-white hover:bg-slate-800" onClick={onBackfill}>
             Backfill desc/tags
           </Btn>
-          <Btn className="bg-indigo-600 text-white hover:bg-indigo-700" onClick={onDownloadTranscriptsJson}>
-            Transcripts JSON
-          </Btn>
           <a
             className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium ring-1 ring-slate-200 hover:bg-slate-50"
             href={`/api/channels/${encodeURIComponent(selectedSavedChannelId)}/thumbnails.zip?work=${encodeURIComponent(workApplied)}`}
@@ -500,6 +499,14 @@ export function SavedChannelDetail(props: {
           </Btn>
         </div>
       </div>
+
+      <TranscriptsSessionPanel
+        workApplied={workApplied}
+        channelId={selectedSavedChannelId}
+        videoIds={selectedVideoIds}
+        lang={editLang || "es"}
+        run={run}
+      />
 
       <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white">
         <div className="bg-slate-50 px-3 py-2">

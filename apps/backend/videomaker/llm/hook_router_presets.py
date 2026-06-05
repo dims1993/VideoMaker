@@ -19,8 +19,10 @@ FINANCE_VISUAL_STYLES: dict[str, dict[str, Any]] = {
         "opening_architecture_hint": "Hiperconcreto / documental introspectivo",
         "lighting": "Claroscuro, luz lateral (rembrandt), sombras profundas.",
         "composition": (
-            "Planos detalle (macro) de objetos cotidianos (café, teclado, reloj). "
-            "Profundidad de campo muy baja (fondo desenfocado)."
+            "Variar encuadre por escena: plano general (calle, salón, sala cívica), "
+            "plano medio con personajes en contexto, detalle de manos/props o UI cuando el guion "
+            "nombra pantalla o datos. Macro de escritorio (café, teclado) solo en beats de pantalla; "
+            "profundidad de campo baja en detalles, media en espacios."
         ),
         "color_palette": ["tierra", "azul medianoche", "negro mate", "madera"],
         "ia_keywords": (

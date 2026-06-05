@@ -164,6 +164,7 @@ def ensure_state_matches_template(work_dir: Path, structure_preset: str) -> dict
     sp = normalize_structure_preset(structure_preset)
     cur = load_state(work_dir)
     if cur is None or cur.get("structure_preset") != sp:
+        reset_fragmentation_artifacts(work_dir)
         return init_state(work_dir, sp)
     return cur
 
@@ -217,18 +218,38 @@ def strip_fin_marker(text: str) -> str:
     return FIN_MARKER_RE.sub("", text or "").strip()
 
 
-def assemble_guion(work_dir: Path, state: dict[str, Any]) -> str:
-    parts: list[str] = []
-    ot = str(state.get("outline_text") or "").strip()
-    if ot:
-        parts.append(ot)
+def assemble_guion(
+    work_dir: Path,
+    state: dict[str, Any],
+    *,
+    include_outline: bool = False,
+) -> str:
+    """
+    Ensambla fragmentos generados. Por defecto **solo narración** (sin OUTLINE):
+    el plan va en `pipeline/script_outline.json` / `outline_text`, no en `guion.txt`.
+    """
+    chunk_parts: list[str] = []
     steps = state.get("steps") or []
     if isinstance(steps, list):
-        for i in range(len(steps)):
+        for i, step in enumerate(steps):
+            if not isinstance(step, dict):
+                continue
+            if step.get("status") not in {"generated", "done"}:
+                continue
             p = chunk_file(work_dir, i)
             if p.is_file() and p.stat().st_size > 0:
-                parts.append(p.read_text(encoding="utf-8").strip())
-    return "\n\n---\n\n".join(x for x in parts if x)
+                chunk_parts.append(p.read_text(encoding="utf-8").strip())
+    body = "\n\n---\n\n".join(x for x in chunk_parts if x)
+    if body and not re.search(r"(?im)^\s*(GUI[ÓO]N|GUION|SCRIPT)\s*$", body):
+        body = f"GUIÓN\n{body}"
+    if not include_outline:
+        return body
+    ot = str(state.get("outline_text") or "").strip()
+    if not ot:
+        return body
+    if not body:
+        return ot
+    return f"{ot}\n\n---\n\n{body}"
 
 
 def default_fragment_index_to_generate(state: dict[str, Any]) -> int | None:

@@ -11,11 +11,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from videomaker.core.script_clean import text_for_tts
-
-_GUION_HEADER = re.compile(
-    r"(?im)^(?:#{1,6}\s*)?(?:\*\*)?(GUIÓN|GUION|GUÍON)(?:\*\*)?(?:\s*[:\-—][^\n]*)?\s*$",
-)
+from videomaker.core.script_clean import extract_guion_body, text_for_tts
 
 _CAT_LINE = re.compile(r"(?im)^\[CATEGORIA:\s*([^\]]+)\]\s*$")
 
@@ -23,18 +19,17 @@ _BROLL = re.compile(r"\[B-ROLL\s*:\s*([^\]]*)\]", re.IGNORECASE)
 
 
 def extract_outline_and_body(full: str) -> tuple[str, str]:
-    """Separa outline (antes del encabezado GUIÓN) del cuerpo narrativo."""
+    """Separa outline (planificación) del cuerpo narrativo (GUIÓN / [CATEGORIA:])."""
     full = full.replace("\r\n", "\n")
-    m = _GUION_HEADER.search(full)
-    if m:
-        outline = full[: m.start()].strip()
-        body = full[m.end() :].lstrip("\n")
-        return outline, body
-    if re.search(r"(?im)^(?:#{1,6}\s*)?(?:\*\*)?outline\b", full[:4000] or full):
-        m2 = re.search(r"(?im)^\[CATEGORIA:", full)
-        if m2:
-            return full[: m2.start()].strip(), full[m2.start() :]
-    return "", full
+    body = extract_guion_body(full).strip()
+    full_st = full.strip()
+    if not body or body == full_st:
+        return "", full_st
+    anchor = body.split("\n", 1)[0].strip()
+    pos = full.find(anchor)
+    if pos <= 0:
+        return "", body
+    return full[:pos].strip(), body
 
 
 def _parse_broll_parts(fragment: str) -> list[dict[str, str]]:
@@ -117,6 +112,12 @@ def write_script_bundle(work_dir: Path, raw_script: str) -> Path:
     path = d / "script.json"
     bundle = build_script_bundle(raw_script)
     path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        from videomaker.llm.script_lint import persist_script_quality
+
+        persist_script_quality(work_dir, raw_script)
+    except Exception:
+        pass
     return path
 
 

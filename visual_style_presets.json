@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "alex_v1",
+      "name": "Alex",
+      "bundled": true,
+      "created_at": "2026-06-04T13:04:45Z",
+      "updated_at": "2026-06-05T01:43:22Z",
+      "base_style_en": "highly textured 2D digital illustration, simulating charcoal and colored pencil mixed media, clean but perceptible textured linework with varying weights, flat base colors with soft granular shading, modern editorial cartoon aesthetic, soft illustrative studio lighting, stylized, solid and cohesive visual universe",
+      "protagonist_en": "Same face every frame: simple editorial cartoon eyes as small solid black circles,\nminimal nose, rosy cheeks, no detailed irises, no realistic eye rendering, no 3D shading on face.",
+      "protagonist_wardrobe_en": "messy dark brown hair, warm light-tan skin, black long-sleeve shirt, bare head with no hat cap hood or beanie",
+      "protagonist_action_rules_en": "POSE & ACTION (every block):\n- Give the protagonist a SPECIFIC physical action from the narration (pointing at a number, scrolling a feed, flipping a document page, walking between desks, handing papers, typing, opening a door, comparing two printouts).\n- Vary body pose and camera every block: full-body side view, over-shoulder, hands close-up, walking mid-step, reaching — never repeat the same stance as the previous block.\n- BANNED defaults unless narration says thinking: hand on chin, chin rest, Rodin thinker, arms crossed while staring, standing idle in the center watching vignettes.\n- Montage blocks: protagonist ACTS on props (highlight a salary figure, pin a photo) OR use hands-only / POV — not a passive observer with a thoughtful expression.\n- Prefer concrete verbs over mood words: avoid thoughtful, contemplative, gazing reflectively, pensive.",
+      "protagonist_expressions_en": "neutral: calm circular eyes, relaxed mouth line, attentive but composed\nconcerned: slightly furrowed cartoon brows, worried circular eyes, tight small mouth\nshocked: circular eyes widened, small round open mouth, raised brows in surprise\nskeptical: one raised brow, flat unimpressed mouth, sideways doubtful glance\nfrustrated: brows angled down, pressed lips, tense jaw in simple cartoon lines\nhopeful: soft slight smile, bright circular eyes, lifted cheeks with blush\nrealization: eyes widened with insight, small o-shaped mouth, brows raised in discovery\ndetermined: focused straight-on gaze, firm set mouth, forward-leaning energy\ndismissive: half-lidded circular eyes, flat mouth, unimpressed look\ncurious: head slightly tilted, one brow raised, interested open circular eyes\nrelieved: soft exhale smile, relaxed brows, eased shoulders\noverwhelmed: wide stressed eyes, wavy mouth line, subtle sweat drop in cartoon style",
+      "avoid_en": "detailed eyes, realistic eyes, iris highlights, photorealistic face, 3D portrait",
+      "aspect_ratio": "16:9",
+      "output_spec": "2K output",
+      "planner_extra_rules_en": "",
+      "gemini_continuity_prefix_en": "",
+      "auto_avoid_supplement_en": ""
+    }
+  ]
+}

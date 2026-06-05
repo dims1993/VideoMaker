@@ -24,6 +24,19 @@ Cierra el documento con una línea exacta en una sola línea:
 El usuario revisará este fragmento fuera del modelo (p. ej. en el editor); una pasada posterior continuará el guión. No simules chat interactivo ni pidas “confirmación” dentro del texto.
 """
 
+CHUNKING_OUTLINE_ACT1_EN = """\
+--- Chunking mode (outline + first segment) ---
+In this run you must return ONLY:
+1) A full OUTLINE for the video (all planned sections with rough timings).
+2) The SCRIPT corresponding ONLY to the first narrative segment (approx. 0–5 min of narration), with [CATEGORY: …] and [B-ROLL: …] following the pipeline format.
+
+DO NOT write subsequent acts or blocks in this response (no Act 2+, no full middle development, no long closing, no CTA): stop after the first script block.
+End the document with the exact single-line marker:
+<<< FIN_FRAGMENT_1 >>>
+
+The user will review this fragment outside the model (e.g., in the editor); a later pass will continue the script. Do not simulate interactive chat or request “confirmation” inside the text.
+"""
+
 
 def chunk_outline_act1_only(row: dict[str, Any] | None) -> bool:
     if not row:
@@ -177,7 +190,7 @@ def delete_script_writer_template(template_id: str) -> bool:
     return True
 
 
-def extras_from_template_row(row: dict[str, Any]) -> tuple[str, str]:
+def extras_from_template_row(row: dict[str, Any], lang: str = "es") -> tuple[str, str]:
     """
     Devuelve (system_extra, user_extra) para concatenar al prompt maestro de guion.
     Los campos genéricos van en params_json: pacing, data_density, structure_preset.
@@ -192,17 +205,17 @@ def extras_from_template_row(row: dict[str, Any]) -> tuple[str, str]:
     density = str(pj.get("data_density") or "").strip().lower()
     structure = str(pj.get("structure_preset") or "").strip().lower()
 
-    pacing_hints = {
+    pacing_hints_es = {
         "short": "Ritmo VO: frases cortas y rápidas; prioriza impacto inmediato (estilo snackable).",
         "mixed": "Ritmo VO: alterna frases cortas con párrafos explicativos cuando el tema lo exija.",
         "long": "Ritmo VO: párrafos desarrollados y pausados; tono documental / profundo.",
     }
-    density_hints = {
+    density_hints_es = {
         "low": "Densidad de datos: baja; privilegia historia, metáforas y ejemplos; pocas cifras concretas.",
         "medium": "Densidad de datos: media; mezcla narrativa con datos cuando aporten claridad.",
         "high": "Densidad de datos: alta; incorpora referencias cuantitativas donde proceda y marca incertidumbre como [dato a verificar] si no está en el contexto.",
     }
-    structure_hints = {
+    structure_hints_es = {
         "default_five_blocks": (
             "Estructura de escenas: usa las **cinco secciones** del formato por defecto "
             "([CATEGORIA: Introducción], tres pilares de cuerpo, [CATEGORIA: Cierre]) alineadas con OUTLINE."
@@ -217,6 +230,37 @@ def extras_from_template_row(row: dict[str, Any]) -> tuple[str, str]:
         ),
     }
 
+    pacing_hints_en = {
+        "short": "VO pacing: short punchy sentences; prioritize immediate impact (snackable style).",
+        "mixed": "VO pacing: alternate short sentences with explanatory paragraphs when the topic requires it.",
+        "long": "VO pacing: developed, measured paragraphs; documentary / deep tone.",
+    }
+    density_hints_en = {
+        "low": "Data density: low; favor story, metaphors and examples; few concrete figures.",
+        "medium": "Data density: medium; mix narrative with data where it clarifies.",
+        "high": "Data density: high; incorporate quantitative references where appropriate and mark uncertainty as [data to verify] if not present in context.",
+    }
+    structure_hints_en = {
+        "default_five_blocks": (
+            "Scene structure: use the default FIVE sections format "
+            "([CATEGORY: Introduction], three body pillars, [CATEGORY: Closing]) aligned with the OUTLINE."
+        ),
+        "four_act": (
+            "Four-act scene structure: "
+            "(1) Hook / initial tension (~first block), "
+            "(2) Introduction + clear promise of what the viewer will learn, "
+            "(3) Body in development blocks with data/story according to requested density, "
+            "(4) Closing that elevates (practical consequences / ‘freedom shift’, no new hook). "
+            "Mark [CATEGORY: …] so each act is editable independently."
+        ),
+    }
+
+    # Select language-specific hint maps
+    is_en = isinstance(lang, str) and str(lang or "").strip().lower().startswith("en")
+    pacing_hints = pacing_hints_en if is_en else pacing_hints_es
+    density_hints = density_hints_en if is_en else density_hints_es
+    structure_hints = structure_hints_en if is_en else structure_hints_es
+
     bullets: list[str] = []
     if pacing and pacing in pacing_hints:
         bullets.append(f"- {pacing_hints[pacing]}")
@@ -228,13 +272,14 @@ def extras_from_template_row(row: dict[str, Any]) -> tuple[str, str]:
     if bullets:
         block = "\n".join(bullets)
         usr_e = (
-            usr_e
-            + ("\n\n" if usr_e else "")
-            + "--- Parámetros del template de Script Writer ---\n"
-            + block
+            usr_e + ("\n\n" if usr_e else "") + "--- Parámetros del template de Script Writer ---\n" + block
         ).strip()
 
     if chunk_outline_act1_only(row) and not sequential_fragments_enabled(row):
-        sys_e = (sys_e + "\n\n" if sys_e else "") + CHUNKING_OUTLINE_ACT1_ES.strip()
+        # Prefer English or Spanish chunking text based on the `lang` parameter.
+        if is_en:
+            sys_e = (sys_e + "\n\n" if sys_e else "") + CHUNKING_OUTLINE_ACT1_EN.strip()
+        else:
+            sys_e = (sys_e + "\n\n" if sys_e else "") + CHUNKING_OUTLINE_ACT1_ES.strip()
 
     return sys_e, usr_e

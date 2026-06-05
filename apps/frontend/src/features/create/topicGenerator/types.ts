@@ -1,0 +1,77 @@
+export type TopicIdea = {
+  title: string;
+  angle: string;
+  recommended_duration_minutes: number;
+  why_now?: string;
+  primary_trigger?: string;
+  trigger_stack?: string[];
+  emotional_promise?: string;
+  emotional_arc?: { start?: string; mid?: string; end?: string } | null;
+  visual_symbols?: { symbol?: string; meaning?: string; recurrence_strategy?: string }[];
+  psychological_triggers?: string[];
+  thumbnail_narrative?: {
+    core_contrast?: string;
+    viewer_role?: string;
+    envy_target?: string;
+    emotion?: string;
+  } | null;
+  viewer_state_before_click?: Record<string, number> | null;
+  viewer_state_after_video?: Record<string, number> | null;
+  energy_curve?: string[];
+  visual_density?: Record<string, string> | null;
+  credibility_rules?: Record<string, boolean> | null;
+  core_emotion?: string;
+  identity_shift?: string;
+  identity_transformation?: { from?: string; to?: string } | null;
+  transformation_claim?: string;
+  thumbnail_text?: string;
+  thumbnail_concept?: {
+    one_sentence?: string;
+    contrast?: string;
+    props?: string[];
+    face_emotion?: string;
+    color_story?: string;
+    composition?: string;
+    avoid?: string[];
+  } | null;
+  thumbnailability?: number;
+  familiar_pain?: string;
+  expectation_break?: string;
+  novelty_device?: string;
+  opening_hook?: string;
+  visual_anchor?: string;
+  scene_pack?: string[];
+  broll_keywords?: string[];
+  instantly_visualizable?: boolean | null;
+  click_impulse_score?: number;
+  visual_explosiveness_score?: number;
+  abstractness_score?: number;
+  explaining_mode_score?: number;
+  novelty_score?: number;
+  social_identity_tension?: string;
+  tribe_boundary?: string;
+  status_anxiety_hook?: string;
+  freedom_fantasy?: string;
+  regret_trigger?: string;
+  identity_tension?: number;
+  dominant_emotion?: string;
+  visualizability?: {
+    broll_strength?: number;
+    symbolic_visuals?: number;
+    motion_graphics_potential?: number;
+  } | null;
+  scroll_stop_factors?: string[];
+  social_tension_score?: number;
+  intellectual_tone_score?: number;
+};
+
+export type TopicGeneratorArtifact = {
+  output_language?: "en" | "es";
+  version?: number;
+  topics?: TopicIdea[];
+  selected_index?: number | null;
+  niche_trends?: string;
+  transcript_chars?: number;
+  topic_count?: number;
+  generated_at?: string;
+};

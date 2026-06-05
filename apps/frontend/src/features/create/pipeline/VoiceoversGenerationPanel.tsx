@@ -3,6 +3,9 @@ import { Btn, Input, Label, Select } from "../../../components/ui";
 import { postJson } from "../../../services/api";
 import type { Session } from "../../../types/session";
 import type { RunFn } from "../types";
+import { SceneEditor } from "../sceneEditor/SceneEditor";
+import { ProductionResetButton } from "./ProductionResetButton";
+import { PipelineStepConfirmBar } from "./PipelineStepConfirmBar";
 import { PipelineSection as Section } from "./PipelineSection";
 
 function formatDuration(secs: number): string {
@@ -47,14 +50,16 @@ export function VoiceoversGenerationPanel({
   session, workApplied, busy, run,
   preset, setPreset, previewText, setPreviewText,
   maxChars, setMaxChars, maxSeg, setMaxSeg,
-  voiceStepState, refreshSession,
+  voiceStepState, refreshSession, refreshPipeline,
 }: {
   session: Session | null; workApplied: string; busy: string | null; run: RunFn;
   preset: string; setPreset: (v: string) => void;
   previewText: string; setPreviewText: (v: string) => void;
   maxChars: number; setMaxChars: (v: number) => void;
   maxSeg: number; setMaxSeg: (v: number) => void;
-  voiceStepState?: string; refreshSession?: () => void | Promise<void>;
+  voiceStepState?: string;
+  refreshSession?: () => void | Promise<void>;
+  refreshPipeline?: () => void | Promise<void>;
 }) {
   const isRunning = voiceStepState === "running";
   const isDone = voiceStepState === "done";
@@ -63,6 +68,8 @@ export function VoiceoversGenerationPanel({
   const activeNarration = session?.active_narration ?? null;
   const narrationUrl = session?.urls?.narration ?? "";
 
+  const [voiceResetInfo, setVoiceResetInfo] = useState<string | null>(null);
+  const [sceneEditorReloadKey, setSceneEditorReloadKey] = useState(0);
   const prevStepState = useRef(voiceStepState);
   useEffect(() => {
     const prev = prevStepState.current;
@@ -88,13 +95,50 @@ export function VoiceoversGenerationPanel({
   return (
     <div className="rounded-2xl bg-slate-900 p-4 space-y-3">
 
+      <PipelineStepConfirmBar
+        stepId="voiceovers_generation"
+        stepLabel="Voiceovers Generation"
+        workApplied={workApplied}
+        stepState={voiceStepState ?? "idle"}
+        run={run}
+        onAfterRun={refreshPipeline}
+      />
+
+      <SceneEditor workApplied={workApplied} reloadKey={sceneEditorReloadKey} />
+
       {/* Info */}
       <div className="rounded-xl border border-slate-600 bg-slate-800 px-3 py-2 text-xs text-slate-400">
-        <span className="font-semibold text-white">Voiceovers Generation</span> sintetiza la
-        narración completa del guion usando <strong className="text-slate-300">Coqui XTTS v2</strong> con clonación de voz.
-        El resultado se guarda como <code className="rounded bg-slate-700 px-1">narracion.wav</code> y
-        sincroniza con las imágenes en el paso de render. Puedes generar varias versiones y elegir la mejor.
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <p>
+            <span className="font-semibold text-white">Voiceovers Generation</span> sintetiza la
+            narración completa del guion usando <strong className="text-slate-300">Coqui XTTS v2</strong> con clonación de voz.
+            El resultado se guarda como <code className="rounded bg-slate-700 px-1">narracion.wav</code> y
+            sincroniza con las imágenes en el paso de render. Puedes generar varias versiones y elegir la mejor.
+          </p>
+          <ProductionResetButton
+            workApplied={workApplied}
+            scope="voiceovers"
+            label="Nuevo proyecto (voiceovers)"
+            disabled={busy !== null}
+            onDone={async (msg) => {
+              setVoiceResetInfo(msg);
+              setSceneEditorReloadKey((k) => k + 1);
+              if (refreshSession) await refreshSession();
+              if (refreshPipeline) await refreshPipeline();
+            }}
+          />
+        </div>
+        <p className="mt-2 text-[10px] text-slate-500">
+          Para solo quitar prompts del planificador visual (sin borrar audio), usa{" "}
+          <strong className="text-slate-400">Limpiar prompts visuales</strong> en el Scene Editor.
+        </p>
       </div>
+
+      {voiceResetInfo ? (
+        <p className="rounded-xl border border-rose-500/40 bg-rose-950/30 px-3 py-2 text-xs text-rose-200">
+          {voiceResetInfo}
+        </p>
+      ) : null}
 
       {isRunning && (
         <div className="flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">

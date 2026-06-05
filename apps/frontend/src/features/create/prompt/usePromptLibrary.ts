@@ -1,28 +1,77 @@
 import { useCallback, useState } from "react";
 import { deleteReq, postJson, putJson } from "../../../services/api";
+import { buildInferredNarrativeStructure, mergeLegacyIdentityIntoSystem } from "./promptIdentity";
+import {
+  DEFAULT_PIPELINE_OUTPUT_STRUCTURE,
+  splitUserInstructions,
+} from "./promptInstructions";
+import type { PromptFieldKey } from "./promptPendingReview";
 
 export type PromptTemplateListItem = { id: string; name: string };
+
+type TemplatePayload = {
+  name?: string;
+  hook_style?: string;
+  visual_style?: string;
+  tone?: string;
+  system_instructions?: string;
+  user_instructions?: string;
+  user_instructions_narrative?: string;
+  params_json?: Record<string, unknown>;
+};
+
+function collectPendingFromAnalysis(t: TemplatePayload): Set<PromptFieldKey> {
+  const pending = new Set<PromptFieldKey>();
+  if ((t.name || "").trim()) pending.add("name");
+  if ((t.system_instructions || "").trim()) pending.add("system_instructions");
+  const narr =
+    (t.user_instructions_narrative || "").trim() ||
+    (t.user_instructions || "").trim();
+  if (narr) pending.add("user_instructions_narrative");
+  const pj = (t.params_json || {}) as {
+    target_audience?: string;
+    language_context?: { code?: string };
+    narrative_structure?: { tone?: string; hook_type?: string; cta_type?: string };
+    target_duration_minutes?: number;
+  };
+  if ((pj.target_audience || "").trim()) pending.add("target_audience");
+  const ns = pj.narrative_structure;
+  if ((ns?.tone || "").trim()) pending.add("narrative_tone");
+  if ((ns?.hook_type || "").trim()) pending.add("hook_type");
+  if ((ns?.cta_type || "").trim()) pending.add("cta_type");
+  return pending;
+}
 
 export function usePromptLibrary() {
   const [promptTemplates, setPromptTemplates] = useState<PromptTemplateListItem[]>([]);
 
   const [promptTemplateId, setPromptTemplateId] = useState("");
   const [promptName, setPromptName] = useState("");
-  const [promptHookStyle, setPromptHookStyle] = useState("");
-  const [promptVisualStyle, setPromptVisualStyle] = useState("");
-  const [promptTone, setPromptTone] = useState("");
   const [promptSystem, setPromptSystem] = useState("");
-  const [promptUser, setPromptUser] = useState("");
+  const [promptOutputStructure, setPromptOutputStructure] = useState(DEFAULT_PIPELINE_OUTPUT_STRUCTURE);
+  const [promptUserNarrative, setPromptUserNarrative] = useState("");
   const [promptTopic, setPromptTopic] = useState("");
   const [promptTargetAudience, setPromptTargetAudience] = useState("");
   const [promptLangCode, setPromptLangCode] = useState("es-ES");
-  const [promptSlangLevel, setPromptSlangLevel] = useState<"low" | "medium" | "high">("low");
   const [promptNarrTone, setPromptNarrTone] = useState("");
   const [promptHookType, setPromptHookType] = useState("");
   const [promptCtaType, setPromptCtaType] = useState("");
-  const [promptAspectRatio, setPromptAspectRatio] = useState("9:16");
-  const [promptVisualStyle2, setPromptVisualStyle2] = useState("");
-  const [promptKeyPoints, setPromptKeyPoints] = useState("");
+  const [promptTargetDurationMinutes, setPromptTargetDurationMinutes] = useState(10);
+  const [promptVideoRestrictions, setPromptVideoRestrictions] = useState("");
+  const [pendingReviewFields, setPendingReviewFields] = useState<Set<PromptFieldKey>>(new Set());
+
+  const clearPendingReview = useCallback((key: PromptFieldKey) => {
+    setPendingReviewFields((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+  }, []);
+
+  const clearAllPendingReview = useCallback(() => {
+    setPendingReviewFields(new Set());
+  }, []);
 
   const loadPromptTemplates = useCallback(async () => {
     try {
@@ -38,52 +87,93 @@ export function usePromptLibrary() {
   const buildPayload = useCallback(() => {
     return {
       name: promptName,
-      hook_style: promptHookStyle,
-      visual_style: promptVisualStyle,
-      tone: promptTone,
+      hook_style: "",
+      visual_style: "",
+      tone: "",
       system_instructions: promptSystem,
-      user_instructions: promptUser,
+      user_instructions: promptUserNarrative,
       params_json: {
         target_audience: promptTargetAudience,
-        language_context: { code: promptLangCode, slang_level: promptSlangLevel },
-        narrative_structure: {
+        narrative_structure: buildInferredNarrativeStructure({
           tone: promptNarrTone,
           hook_type: promptHookType,
           cta_type: promptCtaType,
-        },
-        visual_identity: { style: promptVisualStyle2, aspect_ratio: promptAspectRatio },
-        key_points: promptKeyPoints
-          .split(",")
-          .map((x) => x.trim())
-          .filter(Boolean),
+        }),
+        output_structure:
+          promptOutputStructure.trim() ||
+          (promptUserNarrative.trim() ? DEFAULT_PIPELINE_OUTPUT_STRUCTURE : ""),
       },
     };
   }, [
     promptName,
-    promptHookStyle,
-    promptVisualStyle,
-    promptTone,
     promptSystem,
-    promptUser,
+    promptUserNarrative,
+    promptOutputStructure,
     promptTargetAudience,
-    promptLangCode,
-    promptSlangLevel,
     promptNarrTone,
     promptHookType,
     promptCtaType,
-    promptAspectRatio,
-    promptVisualStyle2,
-    promptKeyPoints,
   ]);
+
+  const applyTemplateFields = useCallback((t: TemplatePayload) => {
+    setPromptName(t.name || "");
+    setPromptSystem(
+      mergeLegacyIdentityIntoSystem(t.system_instructions || "", {
+        hook_style: t.hook_style,
+        visual_style: t.visual_style,
+        tone: t.tone,
+      }),
+    );
+    const pj = (t.params_json || {}) as {
+      target_audience?: string;
+      language_context?: { code?: string };
+      narrative_structure?: { tone?: string; hook_type?: string; cta_type?: string };
+      target_duration_minutes?: number;
+      output_structure?: string;
+      channel_expressions?: string;
+    };
+    const storedOut = (pj.output_structure || "").trim();
+    const narrRaw =
+      (t.user_instructions_narrative || "").trim() ||
+      (t.user_instructions || "").trim();
+    if (storedOut) {
+      setPromptOutputStructure(storedOut);
+      setPromptUserNarrative(narrRaw);
+    } else {
+      const split = splitUserInstructions(narrRaw);
+      setPromptOutputStructure(split.outputStructure);
+      setPromptUserNarrative(split.narrative);
+    }
+    setPromptTargetAudience(pj.target_audience || "");
+    setPromptNarrTone(pj.narrative_structure?.tone || "");
+    setPromptHookType(pj.narrative_structure?.hook_type || "");
+    setPromptCtaType(pj.narrative_structure?.cta_type || "");
+  }, []);
+
+  const applyAnalysisResult = useCallback(
+    (t: TemplatePayload) => {
+      const narrative =
+        (t.user_instructions_narrative || "").trim() ||
+        (t.user_instructions || "").trim();
+      applyTemplateFields({
+        ...t,
+        user_instructions: narrative,
+        user_instructions_narrative: narrative,
+      });
+      setPendingReviewFields(collectPendingFromAnalysis(t));
+    },
+    [applyTemplateFields],
+  );
 
   const saveTemplate = useCallback(async (): Promise<string> => {
     const base = buildPayload();
     const nameForApi =
-      (base.name || "").trim() || (promptTopic || "").trim() || "Plantilla sin nombre";
+      (base.name || "").trim() || "Plantilla sin nombre";
     const payload = { ...base, name: nameForApi };
     if (promptTemplateId) {
       await putJson(`/api/prompt-templates/${encodeURIComponent(promptTemplateId)}`, payload);
       await loadPromptTemplates();
+      clearAllPendingReview();
       return promptTemplateId;
     } else {
       const res = await postJson<{ ok?: boolean; template?: { id?: string | number } }>(`/api/prompt-templates`, payload);
@@ -91,76 +181,44 @@ export function usePromptLibrary() {
       const id = rawId != null && rawId !== "" ? String(rawId) : "";
       if (id) {
         setPromptTemplateId(id);
-        if (!(promptName || "").trim() && (promptTopic || "").trim()) {
+        if (!(promptName || "").trim()) {
           setPromptName(nameForApi);
         }
       }
       await loadPromptTemplates();
+      clearAllPendingReview();
       return id;
     }
-  }, [buildPayload, promptTemplateId, loadPromptTemplates, promptName, promptTopic]);
+  }, [buildPayload, promptTemplateId, loadPromptTemplates, promptName, clearAllPendingReview]);
 
   const clearTemplate = useCallback(() => {
     setPromptTemplateId("");
     setPromptName("");
-    setPromptHookStyle("");
-    setPromptVisualStyle("");
-    setPromptTone("");
     setPromptSystem("");
-    setPromptUser("");
+    setPromptOutputStructure(DEFAULT_PIPELINE_OUTPUT_STRUCTURE);
+    setPromptUserNarrative("");
     setPromptTopic("");
     setPromptTargetAudience("");
     setPromptLangCode("es-ES");
-    setPromptSlangLevel("low");
     setPromptNarrTone("");
     setPromptHookType("");
     setPromptCtaType("");
-    setPromptAspectRatio("9:16");
-    setPromptVisualStyle2("");
-    setPromptKeyPoints("");
-  }, []);
+    setPromptTargetDurationMinutes(10);
+    setPromptVideoRestrictions("");
+    clearAllPendingReview();
+  }, [clearAllPendingReview]);
 
-  const applyTemplateFields = useCallback((t: {
-    name?: string;
-    hook_style?: string;
-    visual_style?: string;
-    tone?: string;
-    system_instructions?: string;
-    user_instructions?: string;
-    params_json?: Record<string, unknown>;
-  }) => {
-    setPromptName(t.name || "");
-    setPromptHookStyle(t.hook_style || "");
-    setPromptVisualStyle(t.visual_style || "");
-    setPromptTone(t.tone || "");
-    setPromptSystem(t.system_instructions || "");
-    setPromptUser(t.user_instructions || "");
-    const pj = (t.params_json || {}) as {
-      target_audience?: string;
-      language_context?: { code?: string; slang_level?: string };
-      narrative_structure?: { tone?: string; hook_type?: string; cta_type?: string };
-      visual_identity?: { style?: string; aspect_ratio?: string };
-      key_points?: string[];
-    };
-    setPromptTargetAudience(pj.target_audience || "");
-    setPromptLangCode(pj.language_context?.code || "es-ES");
-    const sl = pj.language_context?.slang_level;
-    setPromptSlangLevel(sl === "medium" || sl === "high" ? sl : "low");
-    setPromptNarrTone(pj.narrative_structure?.tone || "");
-    setPromptHookType(pj.narrative_structure?.hook_type || "");
-    setPromptCtaType(pj.narrative_structure?.cta_type || "");
-    setPromptAspectRatio(pj.visual_identity?.aspect_ratio || "9:16");
-    setPromptVisualStyle2(pj.visual_identity?.style || "");
-    setPromptKeyPoints(Array.isArray(pj.key_points) ? pj.key_points.join(", ") : "");
-  }, []);
-
-  const applyTemplateFromApi = useCallback(async (id: string) => {
-    if (!id) return;
-    const r = await fetch(`/api/prompt-templates/${encodeURIComponent(id)}`);
-    if (!r.ok) return;
-    const t = await r.json() as Parameters<typeof applyTemplateFields>[0];
-    applyTemplateFields(t);
-  }, [applyTemplateFields]);
+  const applyTemplateFromApi = useCallback(
+    async (id: string) => {
+      if (!id) return;
+      const r = await fetch(`/api/prompt-templates/${encodeURIComponent(id)}`);
+      if (!r.ok) return;
+      const t = (await r.json()) as TemplatePayload;
+      applyTemplateFields(t);
+      clearAllPendingReview();
+    },
+    [applyTemplateFields, clearAllPendingReview],
+  );
 
   const deleteTemplate = useCallback(async () => {
     if (!promptTemplateId) return;
@@ -175,39 +233,64 @@ export function usePromptLibrary() {
     promptTemplateId,
     setPromptTemplateId,
     promptName,
-    setPromptName,
-    promptHookStyle,
-    setPromptHookStyle,
-    promptVisualStyle,
-    setPromptVisualStyle,
-    promptTone,
-    setPromptTone,
+    setPromptName: (v: string) => {
+      setPromptName(v);
+      clearPendingReview("name");
+    },
     promptSystem,
-    setPromptSystem,
-    promptUser,
-    setPromptUser,
+    setPromptSystem: (v: string) => {
+      setPromptSystem(v);
+      clearPendingReview("system_instructions");
+    },
+    promptOutputStructure,
+    setPromptOutputStructure: (v: string) => {
+      setPromptOutputStructure(v);
+      clearPendingReview("user_output_structure");
+    },
+    promptUserNarrative,
+    setPromptUserNarrative: (v: string) => {
+      setPromptUserNarrative(v);
+      clearPendingReview("user_instructions_narrative");
+    },
     promptTopic,
     setPromptTopic,
     promptTargetAudience,
-    setPromptTargetAudience,
+    setPromptTargetAudience: (v: string) => {
+      setPromptTargetAudience(v);
+      clearPendingReview("target_audience");
+    },
     promptLangCode,
-    setPromptLangCode,
-    promptSlangLevel,
-    setPromptSlangLevel,
+    setPromptLangCode: (v: string) => {
+      setPromptLangCode(v);
+      clearPendingReview("language_code");
+    },
     promptNarrTone,
-    setPromptNarrTone,
+    setPromptNarrTone: (v: string) => {
+      setPromptNarrTone(v);
+      clearPendingReview("narrative_tone");
+    },
     promptHookType,
-    setPromptHookType,
+    setPromptHookType: (v: string) => {
+      setPromptHookType(v);
+      clearPendingReview("hook_type");
+    },
     promptCtaType,
-    setPromptCtaType,
-    promptAspectRatio,
-    setPromptAspectRatio,
-    promptVisualStyle2,
-    setPromptVisualStyle2,
-    promptKeyPoints,
-    setPromptKeyPoints,
+    setPromptCtaType: (v: string) => {
+      setPromptCtaType(v);
+      clearPendingReview("cta_type");
+    },
+    promptTargetDurationMinutes,
+    setPromptTargetDurationMinutes: (v: number) => {
+      setPromptTargetDurationMinutes(v);
+      clearPendingReview("target_duration_minutes");
+    },
+    promptVideoRestrictions,
+    setPromptVideoRestrictions,
+    pendingReviewFields,
+    clearPendingReview,
     applyTemplateFromApi,
     applyTemplateFields,
+    applyAnalysisResult,
     clearTemplate,
     saveTemplate,
     deleteTemplate,

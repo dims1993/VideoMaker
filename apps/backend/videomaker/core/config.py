@@ -1,5 +1,8 @@
 """Valores por defecto del generador (ritmo, capítulos, montaje)."""
 
+from __future__ import annotations
+
+import os
 from pathlib import Path
 
 # Duración objetivo guion (minutos)
@@ -28,8 +31,40 @@ VOICE_SAMPLES_DIR = PROJECT_ROOT / "voice_samples"
 OUTPUT_DIR = PROJECT_ROOT / "output"
 TEMP_DIR = PROJECT_ROOT / ".tmp_videomaker"
 
-# Whisper (local)
-WHISPER_MODEL = "base"
+# Whisper (local) — se reevalúan tras load_project_dotenv()
+def _whisper_model() -> str:
+    return (os.environ.get("VIDEOMAKER_WHISPER_MODEL") or "base").strip() or "base"
+
+
+def whisper_word_timestamps_enabled() -> bool:
+    v = (os.environ.get("VIDEOMAKER_WHISPER_WORD_LEVEL") or "1").strip().lower()
+    return v in ("1", "true", "yes", "on", "y", "si", "sí")
 
 # Idiomas soportados para prompts y metadatos
 SUPPORTED_LANGS = ("es", "en")
+
+
+def load_project_dotenv() -> None:
+    """
+    Carga variables desde PROJECT_ROOT/.env.
+
+    Usa la ruta del repo (no el cwd de uvicorn) y rellena claves que estén
+    vacías en el entorno — p. ej. ANTHROPIC_API_KEY="" exportada en el shell.
+    """
+    try:
+        from dotenv import dotenv_values
+    except ImportError:
+        return
+    env_file = PROJECT_ROOT / ".env"
+    if not env_file.is_file():
+        return
+    for key, val in dotenv_values(env_file).items():
+        if val is None or val == "":
+            continue
+        if not str(os.environ.get(key, "")).strip():
+            os.environ[key] = val
+
+
+load_project_dotenv()
+
+WHISPER_MODEL = _whisper_model()

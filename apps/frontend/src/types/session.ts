@@ -7,9 +7,20 @@ export type EnvInfo = {
   OPENAI_API_KEY?: boolean;
 };
 
+export type TranscriptsSessionSummary = {
+  stored: boolean;
+  valid_count: number;
+  combined_chars: number;
+  ready_to_analyze: boolean;
+  analyze_status: string;
+  analyze_error?: string | null;
+  has_prompt_analysis?: boolean;
+};
+
 export type Session = {
   work: string;
   work_dir: string;
+  transcripts_session?: TranscriptsSessionSummary;
   voice_presets: string[];
   has_script: boolean;
   has_narration: boolean;

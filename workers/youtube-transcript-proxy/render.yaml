@@ -1,0 +1,16 @@
+# Despliegue en Render: https://render.com → New → Blueprint
+# o Web Service manual con este repo y Root Directory:
+#   workers/youtube-transcript-proxy
+services:
+  - type: web
+    name: videomaker-transcript-proxy
+    runtime: python
+    plan: free
+    buildCommand: echo "no build"
+    startCommand: python proxy_server.py
+    healthCheckPath: /health
+    envVars:
+      - key: TRANSCRIPT_PROXY_SECRET
+        generateValue: true
+      - key: PYTHON_VERSION
+        value: "3.12.0"
